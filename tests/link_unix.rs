@@ -32,8 +32,7 @@ async fn unix_link_handshake_supports_initialize_thread_read_and_rate_limits() {
                     "platformOs": "macos"
                 }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .unwrap();
@@ -57,8 +56,7 @@ async fn unix_link_handshake_supports_initialize_thread_read_and_rate_limits() {
                     }
                 }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .unwrap();
@@ -83,8 +81,7 @@ async fn unix_link_handshake_supports_initialize_thread_read_and_rate_limits() {
                     "rateLimitsByLimitId": null
                 }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .unwrap();

@@ -171,7 +171,7 @@ impl AppServerClient {
 
     async fn send_value(&mut self, value: Value) -> ProtocolResult<()> {
         self.socket
-            .send(Message::Text(serde_json::to_string(&value)?.into()))
+            .send(Message::Text(serde_json::to_string(&value)?))
             .await?;
         Ok(())
     }

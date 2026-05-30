@@ -7,7 +7,7 @@ use codex_hud::wrapper::{classify_launch, find_real_codex_in_path, LaunchDisposi
 use tempfile::tempdir;
 
 fn os(args: &[&str]) -> Vec<OsString> {
-    args.iter().map(|s| OsString::from(s)).collect()
+    args.iter().map(OsString::from).collect()
 }
 
 #[test]

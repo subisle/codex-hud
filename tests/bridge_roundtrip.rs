@@ -29,8 +29,7 @@ async fn local_ws_bridge_relays_frames_to_the_unix_backend_and_back() {
                 "id": 7,
                 "result": { "thread": { "id": "thr_1" } }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .unwrap();
@@ -51,8 +50,7 @@ async fn local_ws_bridge_relays_frames_to_the_unix_backend_and_back() {
                 "method": "thread/read",
                 "params": { "threadId": "thr_1" }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .unwrap();
