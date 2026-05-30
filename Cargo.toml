@@ -11,3 +11,4 @@ path = "src/bin/codex.rs"
 [dependencies]
 
 [dev-dependencies]
+tempfile = "3"
