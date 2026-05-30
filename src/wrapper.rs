@@ -1,6 +1,8 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchDisposition {
@@ -66,6 +68,8 @@ const PASSTHROUGH_FLAGS: &[&str] = &[
     "--search",
     "--no-alt-screen",
 ];
+
+static UNIX_REMOTE_SUPPORT: OnceLock<bool> = OnceLock::new();
 
 pub fn classify_launch(args: &[OsString]) -> LaunchDisposition {
     if args.iter().any(|arg| {
@@ -144,6 +148,25 @@ pub fn find_real_codex_in_path(path_env: &OsStr, current_exe: &Path) -> Option<P
     }
 
     None
+}
+
+pub fn supports_unix_remote_help(help_text: &str) -> bool {
+    help_text.contains("unix://")
+}
+
+pub fn cached_unix_remote_support(codex_path: &Path) -> bool {
+    *UNIX_REMOTE_SUPPORT.get_or_init(|| probe_unix_remote_support(codex_path))
+}
+
+pub fn probe_unix_remote_support(codex_path: &Path) -> bool {
+    let Ok(output) = Command::new(codex_path).arg("--help").output() else {
+        return false;
+    };
+
+    let mut help_text = String::new();
+    help_text.push_str(&String::from_utf8_lossy(&output.stdout));
+    help_text.push_str(&String::from_utf8_lossy(&output.stderr));
+    supports_unix_remote_help(&help_text)
 }
 
 fn same_binary(candidate: &Path, current_exe: &Path, current_canonical: Option<&Path>) -> bool {
