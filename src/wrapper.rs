@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchDisposition {
@@ -69,7 +70,7 @@ const PASSTHROUGH_FLAGS: &[&str] = &[
     "--no-alt-screen",
 ];
 
-static UNIX_REMOTE_SUPPORT: OnceLock<bool> = OnceLock::new();
+static UNIX_REMOTE_SUPPORT: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
 
 pub fn classify_launch(args: &[OsString]) -> LaunchDisposition {
     if args.iter().any(|arg| {
@@ -150,12 +151,53 @@ pub fn find_real_codex_in_path(path_env: &OsStr, current_exe: &Path) -> Option<P
     None
 }
 
+pub fn build_remote_launch_args(args: &[OsString], remote_url: impl AsRef<OsStr>) -> Vec<OsString> {
+    let mut forwarded = Vec::with_capacity(args.len() + 2);
+    forwarded.push(OsString::from("--remote"));
+    forwarded.push(remote_url.as_ref().to_os_string());
+
+    let mut skip_next_remote_value = false;
+    for arg in args {
+        if skip_next_remote_value {
+            skip_next_remote_value = false;
+            continue;
+        }
+
+        match arg.to_str() {
+            Some("--remote") => {
+                skip_next_remote_value = true;
+            }
+            Some(token) if token.starts_with("--remote=") => {}
+            _ => forwarded.push(arg.clone()),
+        }
+    }
+
+    forwarded
+}
+
 pub fn supports_unix_remote_help(help_text: &str) -> bool {
     help_text.contains("unix://")
 }
 
 pub fn cached_unix_remote_support(codex_path: &Path) -> bool {
-    *UNIX_REMOTE_SUPPORT.get_or_init(|| probe_unix_remote_support(codex_path))
+    let cache = UNIX_REMOTE_SUPPORT.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = fs::canonicalize(codex_path).unwrap_or_else(|_| codex_path.to_path_buf());
+
+    if let Some(cached) = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .copied()
+    {
+        return cached;
+    }
+
+    let supported = probe_unix_remote_support(codex_path);
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, supported);
+    supported
 }
 
 pub fn probe_unix_remote_support(codex_path: &Path) -> bool {

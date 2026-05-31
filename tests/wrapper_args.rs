@@ -3,7 +3,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use codex_hud::wrapper::{classify_launch, find_real_codex_in_path, LaunchDisposition};
+use codex_hud::wrapper::{
+    build_remote_launch_args, cached_unix_remote_support, classify_launch, find_real_codex_in_path,
+    LaunchDisposition,
+};
 use tempfile::tempdir;
 
 fn os(args: &[&str]) -> Vec<OsString> {
@@ -79,8 +82,94 @@ Accepted forms: `ws://host:port`, `wss://host:port`.
     assert!(!codex_hud::wrapper::supports_unix_remote_help(old_help));
 }
 
+#[test]
+fn prepends_remote_args_without_reordering_the_original_arguments() {
+    let forwarded = build_remote_launch_args(
+        &os(&["resume", "--model", "o3", "hello"]),
+        "ws://127.0.0.1:4500",
+    );
+
+    assert_eq!(
+        forwarded,
+        os(&[
+            "--remote",
+            "ws://127.0.0.1:4500",
+            "resume",
+            "--model",
+            "o3",
+            "hello",
+        ])
+    );
+}
+
+#[test]
+fn wrapper_remote_overrides_user_remote_without_reordering_other_arguments() {
+    let forwarded = build_remote_launch_args(
+        &os(&[
+            "resume",
+            "--remote",
+            "ws://user.example:1234",
+            "--model",
+            "o3",
+            "--remote=ws://inline.example:5678",
+            "hello",
+        ]),
+        "unix:///tmp/codex-hud/app-server.sock",
+    );
+
+    assert_eq!(
+        forwarded,
+        os(&[
+            "--remote",
+            "unix:///tmp/codex-hud/app-server.sock",
+            "resume",
+            "--model",
+            "o3",
+            "hello",
+        ])
+    );
+}
+
+#[test]
+fn caches_unix_remote_support_per_binary_path() {
+    let unix_dir = tempdir().unwrap();
+    let ws_dir = tempdir().unwrap();
+
+    let unix_codex = unix_dir.path().join("codex");
+    let ws_codex = ws_dir.path().join("codex");
+
+    write_help_script(
+        &unix_codex,
+        r#"#!/bin/sh
+cat <<'EOF'
+--remote <ADDR>
+Accepted forms: `ws://host:port`, `wss://host:port`, `unix://`, or `unix://PATH`.
+EOF
+"#,
+    );
+    write_help_script(
+        &ws_codex,
+        r#"#!/bin/sh
+cat <<'EOF'
+--remote <ADDR>
+Accepted forms: `ws://host:port`, `wss://host:port`.
+EOF
+"#,
+    );
+
+    assert!(cached_unix_remote_support(&unix_codex));
+    assert!(!cached_unix_remote_support(&ws_codex));
+}
+
 fn write_executable(path: &PathBuf) {
     fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+    let mut perms = fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms).unwrap();
+}
+
+fn write_help_script(path: &PathBuf, script: &str) {
+    fs::write(path, script.as_bytes()).unwrap();
     let mut perms = fs::metadata(path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms).unwrap();

@@ -1,6 +1,8 @@
 pub mod bridge;
+pub mod config;
 pub mod hud;
 pub mod protocol;
+pub mod pty;
 pub mod surface;
 pub mod wrapper;
 

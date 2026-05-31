@@ -49,6 +49,66 @@ fn compact_rendering_truncates_instead_of_expanding() {
 }
 
 #[test]
+fn fit_line_truncates_by_terminal_display_width() {
+    assert_eq!(codex_hud::hud::fit_line("中", 2), "中");
+    assert_eq!(codex_hud::hud::fit_line("ab中c", 4), "ab中");
+}
+
+#[test]
+fn fit_line_counts_terminal_columns_without_splitting_utf8() {
+    assert_eq!(codex_hud::hud::fit_line("aé", 2), "aé");
+    assert_eq!(codex_hud::hud::fit_line("é", 1), "é");
+}
+
+#[test]
+fn compact_rendering_handles_zero_width() {
+    let lines = render_compact(&snapshot(), 0);
+
+    assert!(lines.is_empty());
+}
+
+#[test]
+fn compact_rendering_truncates_by_terminal_display_width() {
+    let mut snapshot = snapshot();
+    snapshot.model = Some("ab中c".to_string());
+    snapshot.thread_name = None;
+    snapshot.turn_status = None;
+    snapshot.token_usage = None;
+    snapshot.rate_limit = None;
+    snapshot.local = LocalContext {
+        cwd: None,
+        git_branch: None,
+        git_dirty: false,
+    };
+    snapshot.thread_id = None;
+
+    assert_eq!(render_compact(&snapshot, 4), vec!["ab中"]);
+}
+
+#[test]
+fn expanded_rendering_truncates_by_terminal_display_width() {
+    let snapshot = HudSnapshot {
+        thread_id: None,
+        thread_name: None,
+        model: None,
+        turn_status: None,
+        token_usage: None,
+        rate_limit: None,
+        local: LocalContext {
+            cwd: None,
+            git_branch: None,
+            git_dirty: false,
+        },
+        goal: Some("ab中c".to_string()),
+        plan: None,
+        mcp_summary: None,
+        tool_summary: None,
+    };
+
+    assert_eq!(render_expanded(&snapshot, 10), vec!["goal: ab中"]);
+}
+
+#[test]
 fn expanded_rendering_surfaces_goal_plan_mcp_and_tools() {
     let lines = render_expanded(&snapshot(), 100);
     let rendered = lines.join("\n");

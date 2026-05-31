@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
@@ -53,13 +53,19 @@ async fn run_bridge(
     backend_socket: PathBuf,
     mut shutdown: oneshot::Receiver<()>,
 ) -> ProtocolResult<()> {
+    let mut relay_tasks = JoinSet::new();
+
     loop {
         tokio::select! {
-            _ = &mut shutdown => return Ok(()),
+            _ = &mut shutdown => {
+                relay_tasks.abort_all();
+                while relay_tasks.join_next().await.is_some() {}
+                return Ok(());
+            }
             accepted = listener.accept() => {
                 let (client, _) = accepted?;
                 let backend_socket = backend_socket.clone();
-                tokio::spawn(async move {
+                relay_tasks.spawn(async move {
                     let _ = relay_connection(client, backend_socket).await;
                 });
             }

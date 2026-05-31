@@ -1,3 +1,5 @@
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenUsage {
     pub used: u64,
@@ -101,11 +103,27 @@ impl HudSnapshot {
 }
 
 fn truncate_to_width(text: &str, width: usize) -> String {
-    if text.len() <= width {
+    if width == 0 {
+        return String::new();
+    }
+
+    if text.width() <= width {
         return text.to_string();
     }
 
-    text.chars().take(width).collect()
+    let mut current_width = 0;
+    let mut end = 0;
+    for (start, ch) in text.char_indices() {
+        let char_width = ch.width().unwrap_or(0);
+        let next_width = current_width + char_width;
+        if next_width > width {
+            break;
+        }
+        current_width = next_width;
+        end = start + ch.len_utf8();
+    }
+
+    text[..end].to_string()
 }
 
 pub fn fit_line(text: impl AsRef<str>, width: usize) -> String {

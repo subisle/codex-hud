@@ -10,7 +10,14 @@
 
 ---
 
-**Reality check:** 目前仓库只有设计文档和这份计划，没有可执行 Rust 源码树。计划顺序按“先把启动器接管入口，再接协议，再做 HUD，再做 PTY 宿主与安装”排布，避免把未确认的实现细节提前写死。
+**Reality check:** 当前仓库已经有 Rust 源码树和测试文件；这份计划保留原始任务拆分，同时用执行记录标注当前已补齐、待验证或仍缺失的状态。后续判断以实际文件和运行结果为准，避免把旧计划当成当前事实。
+
+**执行记录（按顺序）**
+- 2026-05-31: 已补齐 crate 脚手架、wrapper 路由、真实二进制发现、app-server/bridge 传输层、HUD 快照与渲染、config/install 相关骨架，以及 PTY 布局/env helper。
+- 2026-05-31: 当前测试清单为 `tests/smoke.rs`、`tests/wrapper_args.rs`、`tests/link_unix.rs`、`tests/bridge_roundtrip.rs`、`tests/hud_render.rs`、`tests/pty_layout.rs`、`tests/launcher_flow.rs`、`tests/config.rs`；当前仓库没有 `tests/launcher_e2e.rs`。
+- 2026-05-31: 安装脚本已调整为把 `target/release/codex` 安装成 PATH 前置目录里的 `codex` wrapper，并要求真实 `codex` 仍保留在后续 PATH 中供 wrapper 查找，不能覆盖系统真实 Codex。
+- 2026-05-31: Task 7 已补齐：`src/bin/codex.rs` 已接入 shared app-server 启动/复用、runtime capability probe、`unix://` remote 优先路径、PTY host 存活时的 loopback ws bridge、remote 准备失败后的普通 Codex 回退、真实 TTY 下的 raw mode / PTY 转发 / resize，以及底部 compact HUD 定时绘制。
+- 2026-05-31: 已验证 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和完整 `cargo test` 通过；完整 `cargo test` 在默认 sandbox 会因 Unix socket 权限失败，已按权限要求提权复验通过。真实 Codex TTY 手工 smoke check 仍需在用户终端中运行。
 
 ### Task 1: Bootstrap the crate and shared smoke test
 
@@ -182,7 +189,7 @@ git commit -m "feat: add inline PTY host primitives"
 - Modify: `src/lib.rs`
 - Modify: `install.sh`
 - Create: `tests/config.rs`
-- Create: `tests/launcher_e2e.rs`
+- Current launcher coverage: `tests/launcher_flow.rs`
 
 - [ ] **Step 1: Lock down config discovery**
 
@@ -192,20 +199,20 @@ git commit -m "feat: add inline PTY host primitives"
 
 `install.sh` 要把 wrapper 放进 PATH 的前面，同时保持真实 `codex` 仍然可被 wrapper 找到，不允许安装脚本把系统里原来的 Codex 覆盖掉。
 
-- [ ] **Step 3: Add an end-to-end launcher smoke test**
+- [ ] **Step 3: Add or extend launcher smoke coverage**
 
-`tests/launcher_e2e.rs` 要在临时 PATH 下模拟一个真实 `codex`，再运行当前 wrapper 二进制，确认交互式启动会被接管，而 `exec` / `plugin` 仍然透传。
+当前仓库没有单独的 `tests/launcher_e2e.rs`；现有 launcher 覆盖在 `tests/launcher_flow.rs`。这个测试要在临时 PATH 下模拟一个真实 `codex`，再运行当前 wrapper 二进制，确认交互式启动会被接管，而 `exec` / `plugin` 仍然透传。
 
 - [ ] **Step 4: Run the config and launcher tests**
 
-Run: `cargo test --test config --test launcher_e2e -v`
+Run: `cargo test --test config --test launcher_flow -v`
 
 Expected: 通过。
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/config.rs src/lib.rs install.sh tests/config.rs tests/launcher_e2e.rs
+git add src/config.rs src/lib.rs install.sh tests/config.rs tests/launcher_flow.rs
 git commit -m "feat: finish launcher config and e2e coverage"
 ```
 
@@ -216,15 +223,15 @@ git commit -m "feat: finish launcher config and e2e coverage"
 - Modify: `src/lib.rs`
 - Modify: `codex-cli-hud-design.md` only if runtime probing or fallback text needs another round of校正
 
-- [ ] **Step 1: Wire the final launcher**
+- [x] **Step 1: Finish and verify the final launcher**
 
-把 wrapper、transport selector、bridge、PTY host、HUD renderer 和 config 一次性连起来：交互式 `codex` 自动进入 inline HUD；非交互命令完全透传；当 HUD 或 bridge 失败时，直接降级到普通 Codex 交互会话，并保留原始退出码。
+当前代码已把 wrapper、transport selector、shared app-server、PTY host、inline compact HUD renderer、config 和 fallback 路径连起来：交互式 `codex` 会准备 remote 并进入 inline HUD；非交互命令完全透传；当 app-server 或 bridge 准备失败时，会降级到普通 Codex 交互会话，并保留原始退出码。
 
-- [ ] **Step 2: Run the full verification set**
+- [x] **Step 2: Run the full verification set**
 
 Run: `cargo test && cargo fmt --check && cargo clippy --all-targets -- -D warnings`
 
-Expected: 全部通过，没有 warning。
+Result: `cargo fmt --check` 通过，`cargo clippy --all-targets -- -D warnings` 通过，完整 `cargo test` 提权后通过。默认 sandbox 下的 `cargo test` 会在 Unix socket 测试处被 `Operation not permitted` 拦截。
 
 - [ ] **Step 3: Manual smoke check**
 

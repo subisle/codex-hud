@@ -17,6 +17,27 @@ async fn local_ws_bridge_relays_frames_to_the_unix_backend_and_back() {
         let (stream, _) = listener.accept().await.unwrap();
         let mut ws = accept_async(stream).await.unwrap();
 
+        let client_notification = ws.next().await.unwrap().unwrap();
+        let text = client_notification.into_text().unwrap();
+        assert_eq!(
+            text,
+            json!({
+                "method": "thread/ping",
+                "params": { "source": "client" }
+            })
+            .to_string()
+        );
+
+        ws.send(Message::Text(
+            json!({
+                "method": "thread/updated",
+                "params": { "source": "backend" }
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+
         let msg = ws.next().await.unwrap().unwrap();
         let text = msg.into_text().unwrap();
         assert_eq!(
@@ -46,6 +67,16 @@ async fn local_ws_bridge_relays_frames_to_the_unix_backend_and_back() {
     client
         .send(Message::Text(
             json!({
+                "method": "thread/ping",
+                "params": { "source": "client" }
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    client
+        .send(Message::Text(
+            json!({
                 "id": 7,
                 "method": "thread/read",
                 "params": { "threadId": "thr_1" }
@@ -54,6 +85,16 @@ async fn local_ws_bridge_relays_frames_to_the_unix_backend_and_back() {
         ))
         .await
         .unwrap();
+
+    let notification = client.next().await.unwrap().unwrap().into_text().unwrap();
+    assert_eq!(
+        notification,
+        json!({
+            "method": "thread/updated",
+            "params": { "source": "backend" }
+        })
+        .to_string()
+    );
 
     let response = client.next().await.unwrap().unwrap().into_text().unwrap();
     assert_eq!(

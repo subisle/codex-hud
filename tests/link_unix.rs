@@ -24,6 +24,30 @@ async fn unix_link_handshake_supports_initialize_thread_read_and_rate_limits() {
         .await;
         ws.send(Message::Text(
             json!({
+                "method": "thread/updated",
+                "params": {
+                    "threadId": "thr_123",
+                    "sequence": 1
+                }
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+        ws.send(Message::Text(
+            json!({
+                "method": "thread/updated",
+                "params": {
+                    "threadId": "thr_123",
+                    "sequence": 2
+                }
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+        ws.send(Message::Text(
+            json!({
                 "id": 0,
                 "result": {
                     "userAgent": "codex-hud-test",
@@ -100,6 +124,14 @@ async fn unix_link_handshake_supports_initialize_thread_read_and_rate_limits() {
         .await
         .unwrap();
     assert_eq!(init["userAgent"], "codex-hud-test");
+
+    let first_notification = client.next_message().await.unwrap();
+    assert_eq!(first_notification["method"], "thread/updated");
+    assert_eq!(first_notification["params"]["sequence"], 1);
+
+    let second_notification = client.next_message().await.unwrap();
+    assert_eq!(second_notification["method"], "thread/updated");
+    assert_eq!(second_notification["params"]["sequence"], 2);
 
     client.initialized().await.unwrap();
 
