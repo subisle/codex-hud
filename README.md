@@ -83,6 +83,8 @@ Please first check whether the real Codex CLI and PATH are already configured on
 
 ## What It Looks Like
 
+![codex-hud terminal screenshot](assets/codex-hud.png)
+
 ### Default Style
 
 ```text
@@ -249,6 +251,10 @@ Next updates will add:
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
+### Unreleased - 2026-06-02
+
+- Added a README screenshot showing the terminal HUD in a real Codex session.
 
 ### 0.1.0 - 2026-06-01
 
