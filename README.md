@@ -6,9 +6,9 @@
 
 <!-- README-I18N:END -->
 
-`codex-hud` is a terminal HUD wrapper for Codex CLI. It does not fork Codex or modify Codex source code. Instead, when you run `codex`, it intercepts interactive launches, runs the real Codex CLI inside a child PTY, and renders a status bar at the bottom of the same terminal.
+`codex-hud` is a cool open-source project for brilliant Codex CLI programmers. It adds a terminal HUD that shows context, model, usage, Git status, tool activity, and other session signals while you develop with Codex CLI.
 
-The current version focuses on macOS terminal environments. More terminal and platform compatibility will be added over time.
+It helps you stay in flow without forking Codex or modifying Codex source code. The current version focuses on macOS terminal environments, with more terminal and platform compatibility planned over time.
 
 ![codex-hud terminal screenshot](assets/codex-hud.png)
 
@@ -254,6 +254,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ### Unreleased - 2026-06-02
 
+- Updated the README introduction copy for the open-source Codex CLI HUD positioning.
 - Added a README screenshot in the introduction, showing the terminal HUD in a real Codex session.
 
 ### 0.1.0 - 2026-06-01

@@ -6,9 +6,9 @@
 
 <!-- README-I18N:END -->
 
-`codex-hud` 是一个给 Codex CLI 用的终端 HUD wrapper。它不 fork Codex，也不改 Codex 源码，而是在你输入 `codex` 时接管交互式启动，把真实 Codex 放进子 PTY 里，并在同一个终端底部显示状态栏。
+`codex-hud` 是一个很酷的开源项目，用来辅助 Codex CLI 天才程序员开发。它会在终端里显示上下文、模型、用量、Git 状态、工具调用等会话信息，让你在使用 Codex CLI 写代码时更容易掌握全局状态。
 
-当前阶段优先适配 macOS 终端环境，后续会持续补更多终端和平台兼容性。
+它不 fork Codex，也不修改 Codex 源码，只专注于给现有 Codex CLI 体验补上一层清晰的终端 HUD。当前阶段优先适配 macOS 终端环境，后续会持续补更多终端和平台兼容性。
 
 ![codex-hud 终端截图](assets/codex-hud.png)
 
@@ -254,6 +254,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ### Unreleased - 2026-06-02
 
+- 调整 README 介绍文案，突出开源 Codex CLI HUD 项目定位。
 - 在 README 介绍区添加截图，展示真实 Codex 会话里的终端 HUD 效果。
 
 ### 0.1.0 - 2026-06-01
