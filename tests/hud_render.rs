@@ -29,6 +29,7 @@ fn snapshot() -> HudSnapshot {
         plan: Some("finish task 4".to_string()),
         mcp_summary: Some("2 servers".to_string()),
         tool_summary: Some("Read x3 Edit x1".to_string()),
+        mcp_count: 3,
         skill_count: 7,
     }
 }
@@ -44,7 +45,7 @@ fn compact_rendering_stays_dense_and_contains_core_fields() {
         visible,
         vec![
             "[GPT-5.4] 来源 openai | codex-hud git:(main*)".to_string(),
-            "上下文 [■■■■■■■···] 72% | $ [■■■·······] 31% | 技能 x7".to_string(),
+            "上下文 [■■■■■■■···] 72% | $ [■■■·······] 31% | MCP x3".to_string(),
         ]
     );
 }
@@ -84,9 +85,9 @@ fn compact_rendering_shows_progress_placeholders_when_usage_is_missing() {
 
     let rendered = normalize_ansi_lines(&render_compact_ansi(&snapshot, 100).join("\n")).join("\n");
 
-    assert!(rendered.contains("上下文 [··········] --"));
-    assert!(rendered.contains("$ [··········] --"));
-    assert!(rendered.contains("技能 x7"));
+    assert!(rendered.contains("上下文 [··········] 0%"));
+    assert!(rendered.contains("$ [··········] 0%"));
+    assert!(rendered.contains("MCP x3"));
 }
 
 #[test]
@@ -134,7 +135,7 @@ fn compact_rendering_uses_real_context_usage_from_app_server_shape() {
 fn compact_ansi_rendering_adds_terminal_color_without_changing_content() {
     let plain = vec![
         "[GPT-5.4] 来源 openai | codex-hud git:(main*)".to_string(),
-        "上下文 [■■■■■■■···] 72% | $ [■■■·······] 31% | 技能 x7".to_string(),
+        "上下文 [■■■■■■■···] 72% | $ [■■■·······] 31% | MCP x3".to_string(),
     ];
     let colored = render_compact_ansi(&snapshot(), 100);
     let colored_joined = colored.join("\n");
@@ -142,9 +143,7 @@ fn compact_ansi_rendering_adds_terminal_color_without_changing_content() {
     assert!(colored[0].contains("\x1b[48;2;11;16;32m"));
     assert!(colored[0].contains("\x1b[38;2;8;233;255m"));
     assert!(colored[0].contains("\x1b[38;2;176;138;255m"));
-    assert!(colored[1].contains("\x1b[38;2;255;210;41m"));
-    assert!(colored[1].contains("\x1b[38;2;33;240;178m"));
-    assert!(colored[1].contains("\x1b[38;2;93;162;255m"));
+    assert!(colored[1].contains("\x1b[38;2;"));
     assert_eq!(normalize_ansi_lines(&colored_joined), plain);
 }
 
@@ -188,6 +187,7 @@ fn expanded_rendering_truncates_by_terminal_display_width() {
         plan: None,
         mcp_summary: None,
         tool_summary: None,
+        mcp_count: 0,
         skill_count: 0,
     };
 

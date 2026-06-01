@@ -34,6 +34,7 @@ pub struct HudSnapshot {
     pub plan: Option<String>,
     pub mcp_summary: Option<String>,
     pub tool_summary: Option<String>,
+    pub mcp_count: u64,
     pub skill_count: u64,
 }
 
@@ -587,7 +588,7 @@ fn usage_percent(used: u64, limit: u64) -> Option<u8> {
 fn progress_segment(label: &str, percent: Option<u8>) -> String {
     match percent {
         Some(percent) => format!("{label} {percent}% {}", progress_bar(percent, 10)),
-        None => format!("{label} -- {}", progress_bar(0, 10)),
+        None => format!("{label} 0% {}", progress_bar(0, 10)),
     }
 }
 

@@ -8,10 +8,16 @@ const FG_PURPLE: &str = "\x1b[38;2;176;138;255m";
 const FG_YELLOW: &str = "\x1b[38;2;255;210;41m";
 const FG_GREEN: &str = "\x1b[38;2;33;240;178m";
 const FG_BLUE: &str = "\x1b[38;2;93;162;255m";
-const FG_RED: &str = "\x1b[38;2;255;79;103m";
 const FG_SEP: &str = "\x1b[38;2;99;112;134m";
 const BG_HUD: &str = "\x1b[48;2;11;16;32m";
 const BOLD: &str = "\x1b[1m";
+
+const RGB_CYAN: (u8, u8, u8) = (8, 233, 255);
+const RGB_PURPLE: (u8, u8, u8) = (176, 138, 255);
+const RGB_YELLOW: (u8, u8, u8) = (255, 210, 41);
+const RGB_GREEN: (u8, u8, u8) = (33, 240, 178);
+const RGB_BLUE: (u8, u8, u8) = (93, 162, 255);
+const RGB_RED: (u8, u8, u8) = (255, 79, 103);
 
 const SOURCE_LABEL: &str = "来源";
 const HUD_TITLE: &str = "codex-hud";
@@ -119,7 +125,7 @@ fn quota_segment(snapshot: &HudSnapshot) -> String {
 }
 
 fn tools_segment(snapshot: &HudSnapshot) -> String {
-    format!("技能 x{}", snapshot.skill_count)
+    format!("MCP x{}", snapshot.mcp_count)
 }
 
 fn percent_from_usage(used: u64, limit: u64) -> Option<u8> {
@@ -134,7 +140,7 @@ fn percent_from_usage(used: u64, limit: u64) -> Option<u8> {
 fn percent_label(percent: Option<u8>) -> String {
     percent
         .map(|percent| format!("{percent}%"))
-        .unwrap_or_else(|| "--".to_string())
+        .unwrap_or_else(|| "0%".to_string())
 }
 
 fn plain_bar(percent: Option<u8>) -> String {
@@ -207,7 +213,7 @@ fn colorize_bottom_line(line: &str) -> String {
             output.push(colorize_context_part(part));
         } else if part.starts_with("$") {
             output.push(colorize_quota_part(part));
-        } else if part.starts_with("技能") {
+        } else if part.starts_with("MCP") {
             output.push(colorize_tools_part(part));
         } else {
             output.push(style(part, FG_TEXT, false));
@@ -219,32 +225,20 @@ fn colorize_bottom_line(line: &str) -> String {
 
 fn colorize_context_part(part: &str) -> String {
     colorize_metric_part(part, FG_YELLOW, |index, filled| {
-        if index >= filled {
-            FG_MUTED
-        } else if index >= 8 {
-            FG_RED
-        } else if index >= 6 {
-            FG_YELLOW
-        } else {
-            FG_GREEN
-        }
+        gradient_cell(index, filled, RGB_GREEN, RGB_YELLOW, RGB_RED)
     })
 }
 
 fn colorize_quota_part(part: &str) -> String {
     colorize_metric_part(part, FG_BLUE, |index, filled| {
-        if index < filled {
-            FG_BLUE
-        } else {
-            FG_MUTED
-        }
+        gradient_cell(index, filled, RGB_CYAN, RGB_BLUE, RGB_PURPLE)
     })
 }
 
 fn colorize_metric_part(
     part: &str,
     value_color: &str,
-    cell_color: impl Fn(usize, usize) -> &'static str,
+    cell_color: impl Fn(usize, usize) -> (u8, u8, u8),
 ) -> String {
     let Some((label, rest)) = part.split_once('[') else {
         return style(part, FG_TEXT, false);
@@ -257,7 +251,11 @@ fn colorize_metric_part(
     let mut styled_bar = String::new();
     for (index, cell) in bar.chars().enumerate() {
         let text = if cell == '■' { "■" } else { "·" };
-        styled_bar.push_str(&style(text, cell_color(index, filled), false));
+        if cell == '■' {
+            styled_bar.push_str(&style_rgb(text, cell_color(index, filled), false));
+        } else {
+            styled_bar.push_str(&style(text, FG_MUTED, false));
+        }
     }
 
     format!(
@@ -269,15 +267,47 @@ fn colorize_metric_part(
 }
 
 fn colorize_tools_part(part: &str) -> String {
-    let Some(count) = part.strip_prefix("技能 ") else {
+    let Some(count) = part.strip_prefix("MCP ") else {
         return style(part, FG_GREEN, true);
     };
 
     format!(
         "{} {}",
-        style("技能", FG_TEXT, false),
+        style("MCP", FG_TEXT, false),
         style(count.trim(), FG_GREEN, true)
     )
+}
+
+fn gradient_cell(
+    index: usize,
+    filled: usize,
+    start: (u8, u8, u8),
+    middle: (u8, u8, u8),
+    end: (u8, u8, u8),
+) -> (u8, u8, u8) {
+    if filled <= 1 {
+        return start;
+    }
+
+    let ratio = index as f32 / (filled - 1) as f32;
+    if ratio <= 0.5 {
+        lerp_rgb(start, middle, ratio * 2.0)
+    } else {
+        lerp_rgb(middle, end, (ratio - 0.5) * 2.0)
+    }
+}
+
+fn lerp_rgb(start: (u8, u8, u8), end: (u8, u8, u8), ratio: f32) -> (u8, u8, u8) {
+    let ratio = ratio.clamp(0.0, 1.0);
+    (
+        lerp_channel(start.0, end.0, ratio),
+        lerp_channel(start.1, end.1, ratio),
+        lerp_channel(start.2, end.2, ratio),
+    )
+}
+
+fn lerp_channel(start: u8, end: u8, ratio: f32) -> u8 {
+    (start as f32 + (end as f32 - start as f32) * ratio).round() as u8
 }
 
 fn sep() -> String {
@@ -298,4 +328,9 @@ fn style(text: &str, fg: &str, bold: bool) -> String {
     } else {
         format!("{fg}{text}{ANSI_RESET}{BG_HUD}")
     }
+}
+
+fn style_rgb(text: &str, rgb: (u8, u8, u8), bold: bool) -> String {
+    let fg = format!("\x1b[38;2;{};{};{}m", rgb.0, rgb.1, rgb.2);
+    style(text, &fg, bold)
 }

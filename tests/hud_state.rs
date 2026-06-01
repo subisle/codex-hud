@@ -21,6 +21,7 @@ fn blank_snapshot() -> HudSnapshot {
         plan: None,
         mcp_summary: None,
         tool_summary: None,
+        mcp_count: 0,
         skill_count: 0,
     }
 }
