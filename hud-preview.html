@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex HUD 当前样式预览</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --page: #070b14;
+        --hud-bg: #0b1020;
+        --hud-bg-2: #0d1324;
+        --text: #9da8bd;
+        --muted: #748096;
+        --cyan: #08e9ff;
+        --purple: #b08aff;
+        --yellow: #ffd229;
+        --green: #21f0b2;
+        --blue: #5da2ff;
+        --red: #ff4f67;
+        --grid: rgba(111, 162, 255, 0.11);
+        --border: rgba(115, 134, 166, 0.2);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+          radial-gradient(circle at 50% 18%, rgba(8, 233, 255, 0.11), transparent 30%),
+          var(--page);
+        background-size: 32px 32px, 32px 32px, auto, auto;
+        font:
+          14px/1.35 "SFMono-Regular",
+          Menlo,
+          Monaco,
+          Consolas,
+          "Liberation Mono",
+          monospace;
+        overflow: hidden;
+      }
+
+      .stage {
+        width: min(980px, calc(100vw - 28px));
+      }
+
+      .label {
+        margin: 0 0 14px;
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0;
+      }
+
+      .terminal {
+        border: 1px solid var(--border);
+        background: #050812;
+        box-shadow:
+          0 24px 70px rgba(0, 0, 0, 0.48),
+          0 0 0 1px rgba(255, 255, 255, 0.025) inset;
+      }
+
+      .spacer {
+        height: 240px;
+        padding: 18px;
+        color: rgba(157, 168, 189, 0.45);
+      }
+
+      .spacer p {
+        margin: 0 0 8px;
+      }
+
+      .hud {
+        min-height: 77px;
+        padding: 13px 17px 11px;
+        background: linear-gradient(180deg, var(--hud-bg-2), var(--hud-bg));
+        border-top: 1px solid rgba(115, 134, 166, 0.16);
+        color: var(--text);
+        white-space: nowrap;
+        overflow: hidden;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+      }
+
+      .row + .row {
+        margin-top: 7px;
+      }
+
+      .seg {
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
+      }
+
+      .sep {
+        color: #637086;
+        margin: 0 10px;
+      }
+
+      .model {
+        color: var(--cyan);
+        font-weight: 700;
+      }
+
+      .purple {
+        color: var(--purple);
+        font-weight: 600;
+      }
+
+      .yellow {
+        color: var(--yellow);
+        font-weight: 700;
+      }
+
+      .green {
+        color: var(--green);
+        font-weight: 700;
+      }
+
+      .blue {
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .value {
+        color: var(--yellow);
+        font-weight: 700;
+        margin-left: 8px;
+      }
+
+      .value.blue {
+        color: var(--blue);
+      }
+
+      .bar {
+        display: inline-grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 5px;
+        gap: 0;
+        height: 15px;
+        margin-left: 8px;
+        overflow: hidden;
+      }
+
+      .cell {
+        width: 5px;
+        height: 15px;
+        background: rgba(84, 96, 116, 0.28);
+      }
+
+      .fill-green {
+        background: #2ed68d;
+      }
+
+      .fill-yellow {
+        background: #ffd229;
+      }
+
+      .fill-red {
+        background: var(--red);
+      }
+
+      .fill-blue {
+        background: var(--blue);
+      }
+
+      .ghost {
+        background:
+          repeating-linear-gradient(
+            135deg,
+            rgba(93, 162, 255, 0.14) 0,
+            rgba(93, 162, 255, 0.14) 1px,
+            transparent 1px,
+            transparent 3px
+          ),
+          rgba(84, 96, 116, 0.16);
+      }
+
+      .caption {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 760px) {
+        body {
+          place-items: start center;
+          padding-top: 24px;
+          overflow: auto;
+        }
+
+        .terminal {
+          overflow-x: auto;
+        }
+
+        .hud {
+          width: 788px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="stage">
+      <p class="label">current HUD style / 788 x 77 reference</p>
+      <section class="terminal" aria-label="Codex terminal HUD preview">
+        <div class="spacer">
+          <p>Codex interactive area</p>
+          <p>底部固定显示 HUD，不做卡片，不做大面板。</p>
+        </div>
+
+        <div class="hud">
+          <div class="row">
+            <span class="seg model">[GPT-5.4]</span>
+            <span class="seg">&nbsp;来源&nbsp;</span>
+            <span class="seg purple">cc-switch relay</span>
+            <span class="sep">|</span>
+            <span class="seg yellow">codex-hud</span>
+            <span class="seg">&nbsp;git:</span>
+            <span class="seg purple">(main*)</span>
+          </div>
+
+          <div class="row">
+            <span class="seg">上下文</span>
+            <span class="bar" aria-label="上下文 72%">
+              <span class="cell fill-green"></span>
+              <span class="cell fill-green"></span>
+              <span class="cell fill-green"></span>
+              <span class="cell fill-green"></span>
+              <span class="cell fill-green"></span>
+              <span class="cell fill-green"></span>
+              <span class="cell fill-yellow"></span>
+              <span class="cell fill-yellow"></span>
+              <span class="cell fill-red"></span>
+              <span class="cell ghost"></span>
+            </span>
+            <span class="value">72%</span>
+            <span class="sep">|</span>
+            <span class="seg">$</span>
+            <span class="bar" aria-label="$ 31%">
+              <span class="cell fill-blue"></span>
+              <span class="cell fill-blue"></span>
+              <span class="cell fill-blue"></span>
+              <span class="cell fill-blue"></span>
+              <span class="cell fill-blue"></span>
+              <span class="cell ghost"></span>
+              <span class="cell ghost"></span>
+              <span class="cell ghost"></span>
+              <span class="cell ghost"></span>
+              <span class="cell ghost"></span>
+            </span>
+            <span class="value blue">31%</span>
+            <span class="sep">|</span>
+            <span class="seg">MCP x7</span>
+          </div>
+        </div>
+      </section>
+      <p class="caption">当前中文 HUD 文案预览：来源、上下文、$、MCP。</p>
+    </main>
+  </body>
+</html>
