@@ -12,7 +12,19 @@ The current version focuses on macOS terminal environments. More terminal and pl
 
 ## Installation
 
-Install from the macOS arm64 release package:
+Install with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/subisle/codex-hud/main/install.sh | sh
+```
+
+Or install with Homebrew:
+
+```bash
+brew install subisle/tap/codex-hud
+```
+
+Manual release package install is also supported:
 
 ```bash
 curl -L -o codex-hud-v0.1.0-aarch64-apple-darwin.tar.gz \
@@ -38,12 +50,6 @@ export PATH="$HOME/.local/bin:$PATH"
 
 On macOS, `install.sh` runs ad-hoc codesign after copying the wrapper. This avoids the system rejecting the local binary as `Code Signature Invalid` and showing only `killed codex`.
 
-Homebrew installation will be added later:
-
-```bash
-brew install subisle/tap/codex-hud
-```
-
 ## Ask Codex To Install It
 
 If you already use Codex CLI, you can send this prompt directly to Codex:
@@ -52,8 +58,8 @@ If you already use Codex CLI, you can send this prompt directly to Codex:
 Please install codex-hud in the current macOS terminal.
 
 Goals:
-1. Download the latest macOS arm64 release package from https://github.com/subisle/codex-hud/releases.
-2. Extract it and run ./install.sh ./codex from the extracted directory.
+1. Install codex-hud with curl -fsSL https://raw.githubusercontent.com/subisle/codex-hud/main/install.sh | sh.
+2. Confirm that install.sh downloads the latest macOS arm64 release package from https://github.com/subisle/codex-hud/releases.
 3. After installation, confirm that the first result of which -a codex is ~/.local/bin/codex.
 4. Confirm that which -a codex still finds the real Codex CLI later.
 5. If ~/.local/bin is not in PATH, only provide the command that should be added to the shell config. Do not overwrite the real Codex.
@@ -243,8 +249,6 @@ Next updates will add:
 ## License
 
 MIT License. See [LICENSE](LICENSE).
-
-## Changelog
 
 ### 0.1.0 - 2026-06-01
 
