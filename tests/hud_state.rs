@@ -437,3 +437,135 @@ fn does_not_treat_scalar_total_as_context_limit() {
         })
     );
 }
+
+#[test]
+fn prefers_live_context_tokens_over_cumulative_thread_total() {
+    let mut snapshot = blank_snapshot();
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/started",
+            "params": {
+                "thread": {
+                    "id": "thr_live_context",
+                    "model": "gpt-5.4"
+                }
+            }
+        })
+    ));
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thr_live_context",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 990000
+                    },
+                    "context": {
+                        "totalTokens": 42000
+                    },
+                    "modelContextWindow": 1050000
+                }
+            }
+        })
+    ));
+
+    assert_eq!(
+        snapshot.token_usage,
+        Some(TokenUsage {
+            used: 42000,
+            limit: 1050000,
+        })
+    );
+}
+
+#[test]
+fn clears_thread_usage_when_binding_new_thread() {
+    let mut snapshot = blank_snapshot();
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/started",
+            "params": {
+                "thread": {
+                    "id": "thr_old",
+                    "model": "gpt-5.4",
+                    "tokenUsage": {
+                        "total": {
+                            "totalTokens": 900000
+                        },
+                        "modelContextWindow": 1050000
+                    }
+                }
+            }
+        })
+    ));
+    assert_eq!(
+        snapshot.token_usage,
+        Some(TokenUsage {
+            used: 900000,
+            limit: 1050000,
+        })
+    );
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/started",
+            "params": {
+                "thread": {
+                    "id": "thr_new",
+                    "model": "gpt-5.4"
+                }
+            }
+        })
+    ));
+
+    assert_eq!(snapshot.thread_id.as_deref(), Some("thr_new"));
+    assert_eq!(snapshot.token_usage, None);
+}
+
+#[test]
+fn result_thread_can_rebind_after_stale_thread_update() {
+    let mut snapshot = blank_snapshot();
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/updated",
+            "params": {
+                "threadId": "thr_stale",
+                "name": "old terminal",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 900000
+                    },
+                    "modelContextWindow": 1050000
+                }
+            }
+        })
+    ));
+    assert_eq!(snapshot.thread_id.as_deref(), Some("thr_stale"));
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "id": 1,
+            "result": {
+                "thread": {
+                    "id": "thr_current",
+                    "name": "current terminal",
+                    "model": "gpt-5.4"
+                }
+            }
+        })
+    ));
+
+    assert_eq!(snapshot.thread_id.as_deref(), Some("thr_current"));
+    assert_eq!(snapshot.thread_name.as_deref(), Some("current terminal"));
+    assert_eq!(snapshot.token_usage, None);
+}

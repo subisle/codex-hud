@@ -168,8 +168,9 @@ pub fn apply_app_server_message(snapshot: &mut HudSnapshot, message: &Value) -> 
             .unwrap_or(&Value::Null);
 
         return match method {
-            "thread/started" | "thread/updated" | "thread/name/updated" => {
-                apply_thread_payload(snapshot, payload)
+            "thread/started" => apply_thread_payload(snapshot, payload, true),
+            "thread/updated" | "thread/name/updated" => {
+                apply_thread_payload(snapshot, payload, false)
             }
             "thread/status/changed" => apply_thread_status(snapshot, payload),
             "thread/tokenUsage/updated" => apply_token_usage(snapshot, payload),
@@ -199,7 +200,7 @@ pub fn apply_app_server_message(snapshot: &mut HudSnapshot, message: &Value) -> 
         let mut updated = false;
 
         if let Some(thread) = result.get("thread") {
-            updated |= apply_thread_payload(snapshot, thread);
+            updated |= apply_thread_payload(snapshot, thread, true);
         }
         if let Some(rate_limits) = result.get("rateLimits") {
             updated |= apply_rate_limit(snapshot, rate_limits);
@@ -217,13 +218,13 @@ pub fn apply_app_server_message(snapshot: &mut HudSnapshot, message: &Value) -> 
     false
 }
 
-fn apply_thread_payload(snapshot: &mut HudSnapshot, payload: &Value) -> bool {
+fn apply_thread_payload(snapshot: &mut HudSnapshot, payload: &Value, allow_rebind: bool) -> bool {
     let payload = thread_object(payload);
     let Some(object) = payload.as_object() else {
         return false;
     };
 
-    if !thread_id_matches(snapshot, object) {
+    if !allow_rebind && !thread_id_matches(snapshot, object) {
         return false;
     }
 
@@ -235,7 +236,7 @@ fn apply_thread_payload(snapshot: &mut HudSnapshot, payload: &Value) -> bool {
         &["threadId", "thread_id", "id"],
     );
     if previous_thread_id.as_deref() != snapshot.thread_id.as_deref() {
-        snapshot.skill_count = 0;
+        reset_thread_scoped_state(snapshot);
         updated = true;
     }
     updated |= set_string_field(
@@ -261,6 +262,16 @@ fn apply_thread_payload(snapshot: &mut HudSnapshot, payload: &Value) -> bool {
     updated |= apply_token_usage(snapshot, payload);
 
     updated
+}
+
+fn reset_thread_scoped_state(snapshot: &mut HudSnapshot) {
+    snapshot.thread_name = None;
+    snapshot.turn_status = None;
+    snapshot.token_usage = None;
+    snapshot.goal = None;
+    snapshot.plan = None;
+    snapshot.tool_summary = None;
+    snapshot.skill_count = 0;
 }
 
 fn apply_thread_status(snapshot: &mut HudSnapshot, payload: &Value) -> bool {
@@ -517,6 +528,11 @@ fn parse_token_usage(value: &Value, model: Option<&str>) -> Option<TokenUsage> {
         }
     }
 
+    if let Some(used) = live_context_tokens(object) {
+        let limit = token_limit_from_payload_or_model(object, model)?;
+        return Some(TokenUsage { used, limit });
+    }
+
     let total = object.get("total").and_then(Value::as_object);
     let used = total
         .and_then(|total| total.get("totalTokens"))
@@ -525,6 +541,40 @@ fn parse_token_usage(value: &Value, model: Option<&str>) -> Option<TokenUsage> {
     let limit = token_limit_from_payload_or_model(object, model)?;
 
     Some(TokenUsage { used, limit })
+}
+
+fn live_context_tokens(object: &serde_json::Map<String, Value>) -> Option<u64> {
+    for key in [
+        "current",
+        "currentContext",
+        "current_context",
+        "live",
+        "liveContext",
+        "live_context",
+        "contextUsage",
+        "context_usage",
+        "context",
+    ] {
+        if let Some(used) = object.get(key).and_then(token_count_from_value) {
+            return Some(used);
+        }
+    }
+
+    None
+}
+
+fn token_count_from_value(value: &Value) -> Option<u64> {
+    if let Some(tokens) = parse_u64(value) {
+        return Some(tokens);
+    }
+
+    let object = value.as_object()?;
+    object
+        .get("totalTokens")
+        .or_else(|| object.get("total_tokens"))
+        .or_else(|| object.get("tokens"))
+        .or_else(|| object.get("used"))
+        .and_then(parse_u64)
 }
 
 fn token_limit_from_payload_or_model(
