@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -89,7 +90,7 @@ async fn relay_connection(
     observer: Option<Sender<serde_json::Value>>,
 ) -> ProtocolResult<()> {
     let client_ws = accept_async(client).await?;
-    let backend_ws = connect_unix_websocket(&backend_socket).await?;
+    let backend_ws = connect_unix_websocket_with_retry(&backend_socket).await?;
 
     let (client_write, client_read) = client_ws.split();
     let (backend_write, backend_read) = backend_ws.split();
@@ -97,6 +98,25 @@ async fn relay_connection(
     tokio::select! {
         result = pump(client_read, backend_write, observer.clone()) => result,
         result = pump(backend_read, client_write, observer) => result,
+    }
+}
+
+async fn connect_unix_websocket_with_retry(
+    backend_socket: &Path,
+) -> ProtocolResult<tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    loop {
+        match connect_unix_websocket(backend_socket).await {
+            Ok(socket) => return Ok(socket),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(err);
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 

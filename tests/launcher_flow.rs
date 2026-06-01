@@ -1,8 +1,12 @@
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
+use codex_hud::config::Config;
+use codex_hud::launcher::prepare_remote_launch;
 use tempfile::tempdir;
 
 #[test]
@@ -126,6 +130,47 @@ status_rows = 3
     );
     assert!(stdout.contains("SURFACE:fallback"));
     assert!(stdout.contains("FALLBACK:split"));
+}
+
+#[test]
+fn bridge_launch_does_not_wait_for_app_server_socket() {
+    let temp = tempdir().unwrap();
+    let fake_codex = temp.path().join("codex");
+    write_delayed_app_server_codex(&fake_codex);
+    let socket_path = temp.path().join("app-server.sock");
+    let config = Config {
+        daemon: codex_hud::config::DaemonConfig {
+            socket: socket_path.display().to_string(),
+            auto_start: true,
+            reuse_shared_daemon: true,
+        },
+        ..Config::default()
+    };
+
+    let started = Instant::now();
+    let launch = prepare_remote_launch(&fake_codex, &[] as &[OsString], &config, true).unwrap();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "remote launch waited for app-server socket: {elapsed:?}"
+    );
+    assert!(
+        launch.forwarded_args[0].to_string_lossy() == "--remote",
+        "{:?}",
+        launch.forwarded_args
+    );
+    assert!(
+        launch.forwarded_args[1]
+            .to_string_lossy()
+            .starts_with("ws://127.0.0.1:"),
+        "{:?}",
+        launch.forwarded_args
+    );
+    assert!(
+        !socket_path.exists(),
+        "socket should still be delayed when launch returns"
+    );
 }
 
 #[test]
@@ -368,6 +413,27 @@ fi
 
 printf 'ARGS:%s\n' "$*"
 printf 'SURFACE:%s\n' "${CODEX_HUD_LAUNCHER_SURFACE:-<unset>}"
+"#,
+    )
+    .unwrap();
+    let mut perms = fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms).unwrap();
+}
+
+fn write_delayed_app_server_codex(path: &PathBuf) {
+    fs::write(
+        path,
+        r#"#!/bin/sh
+if [ "${1:-}" = "app-server" ]; then
+  listen="${3:-}"
+  socket="${listen#unix://}"
+  sleep 1
+  : > "$socket"
+  exit 0
+fi
+
+printf 'ARGS:%s\n' "$*"
 "#,
     )
     .unwrap();

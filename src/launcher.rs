@@ -26,11 +26,9 @@ pub fn prepare_remote_launch(
     allow_ws_bridge: bool,
 ) -> std::io::Result<PreparedLaunch> {
     let socket_path = daemon_socket_path(&config.daemon.socket);
-    let unix_remote_supported = cached_unix_remote_support(real_codex);
 
-    ensure_app_server(real_codex, &socket_path, config)?;
-
-    if allow_ws_bridge && socket_path_is_socket(&socket_path) {
+    if allow_ws_bridge {
+        start_app_server_without_waiting(real_codex, &socket_path, config)?;
         let runtime = tokio::runtime::Runtime::new().map_err(io_error)?;
         let (hud_events_tx, hud_events_rx) = mpsc::channel();
         let bridge = runtime
@@ -49,6 +47,9 @@ pub fn prepare_remote_launch(
         });
     }
 
+    let unix_remote_supported = cached_unix_remote_support(real_codex);
+    ensure_app_server(real_codex, &socket_path, config)?;
+
     if unix_remote_supported {
         let remote_url = OsString::from(format!("unix://{}", socket_path.display()));
         return Ok(PreparedLaunch {
@@ -62,6 +63,63 @@ pub fn prepare_remote_launch(
     Err(std::io::Error::other(
         "loopback ws bridge requires the wrapper process to remain active",
     ))
+}
+
+fn start_app_server_without_waiting(
+    real_codex: &Path,
+    socket_path: &Path,
+    config: &Config,
+) -> std::io::Result<()> {
+    if socket_path.exists() && !socket_path_is_socket(socket_path) {
+        if config.daemon.auto_start {
+            match fs::remove_file(socket_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "app-server socket path exists but is not a socket: {}",
+                    socket_path.display()
+                ),
+            ));
+        }
+    }
+
+    if socket_path.exists()
+        && socket_path_is_socket(socket_path)
+        && config.daemon.reuse_shared_daemon
+    {
+        return Ok(());
+    }
+
+    if !config.daemon.auto_start {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "app-server socket does not exist: {}",
+                socket_path.display()
+            ),
+        ));
+    }
+
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let listen = format!("unix://{}", socket_path.display());
+    Command::new(real_codex)
+        .arg("app-server")
+        .arg("--listen")
+        .arg(&listen)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    Ok(())
 }
 
 pub fn daemon_socket_path(configured_socket: &str) -> PathBuf {

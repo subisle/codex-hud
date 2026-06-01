@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use codex_hud::bridge::{spawn_local_ws_bridge, spawn_local_ws_bridge_with_observer};
 use futures_util::{SinkExt, StreamExt};
@@ -117,6 +118,73 @@ async fn local_ws_bridge_relays_frames_to_the_unix_backend_and_back() {
         .to_string()
     );
 
+    bridge.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn local_ws_bridge_waits_for_delayed_unix_backend() {
+    let dir = tempdir().unwrap();
+    let socket_path = dir.path().join("delayed-backend.sock");
+    let bridge = spawn_local_ws_bridge(Path::new(&socket_path))
+        .await
+        .unwrap();
+    let url = bridge.local_url();
+
+    let client = tokio::spawn(async move {
+        let (mut client, _) = connect_async(&url).await.unwrap();
+        client
+            .send(Message::Text(
+                json!({
+                    "id": 9,
+                    "method": "thread/read",
+                    "params": { "threadId": "thr_delayed" }
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+
+        client.next().await.unwrap().unwrap().into_text().unwrap()
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let backend = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+
+        let request = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(
+            request,
+            json!({
+                "id": 9,
+                "method": "thread/read",
+                "params": { "threadId": "thr_delayed" }
+            })
+            .to_string()
+        );
+
+        ws.send(Message::Text(
+            json!({
+                "id": 9,
+                "result": { "thread": { "id": "thr_delayed" } }
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    });
+
+    assert_eq!(
+        client.await.unwrap(),
+        json!({
+            "id": 9,
+            "result": { "thread": { "id": "thr_delayed" } }
+        })
+        .to_string()
+    );
+
+    backend.await.unwrap();
     bridge.shutdown().await.unwrap();
 }
 
