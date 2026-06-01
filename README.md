@@ -187,6 +187,14 @@ timeout_secs = 10
 poll_secs = 10
 ```
 
+### Quota Display And Privacy
+
+If you use an AI API relay and that relay exposes a usage or quota API, `codex-hud` can show the relay's current usage and remaining allowance in real time.
+
+When enabled, `codex-hud` reads the key named by `api_key_env` from your local environment and only calls the quota endpoint configured in `usage_url`. The HUD does not display, store, or report your key, and it does not send your session content, prompts, code, payment information, or other private data. Apart from the quota endpoint you explicitly configure, the quota display feature does not make extra network requests.
+
+If the relay does not provide a quota endpoint, or the endpoint is temporarily unavailable, `codex-hud` continues to show the rest of the HUD normally and simply omits the live quota display.
+
 ## Requirements
 
 - A real Codex CLI installation.
@@ -256,6 +264,7 @@ MIT License. See [LICENSE](LICENSE).
 
 - Updated the README introduction copy for the open-source Codex CLI HUD positioning.
 - Added a README screenshot in the introduction, showing the terminal HUD in a real Codex session.
+- Documented AI relay quota display behavior and privacy boundaries.
 
 ### 0.1.0 - 2026-06-01
 
