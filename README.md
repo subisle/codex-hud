@@ -10,6 +10,8 @@
 
 The current version focuses on macOS terminal environments. More terminal and platform compatibility will be added over time.
 
+![codex-hud terminal screenshot](assets/codex-hud.png)
+
 ## Installation
 
 Install with one command:
@@ -82,8 +84,6 @@ Please first check whether the real Codex CLI and PATH are already configured on
 | Thread / plan | Track the current conversation and plan progress |
 
 ## What It Looks Like
-
-![codex-hud terminal screenshot](assets/codex-hud.png)
 
 ### Default Style
 
@@ -254,7 +254,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ### Unreleased - 2026-06-02
 
-- Added a README screenshot showing the terminal HUD in a real Codex session.
+- Added a README screenshot in the introduction, showing the terminal HUD in a real Codex session.
 
 ### 0.1.0 - 2026-06-01
 
