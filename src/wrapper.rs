@@ -151,6 +151,34 @@ pub fn find_real_codex_in_path(path_env: &OsStr, current_exe: &Path) -> Option<P
     None
 }
 
+pub fn path_without_wrapper_dir(path_env: &OsStr, current_exe: &Path) -> OsString {
+    let Some(wrapper_dir) = current_exe.parent() else {
+        return path_env.to_os_string();
+    };
+    let wrapper_dir_canonical = fs::canonicalize(wrapper_dir).ok();
+    let filtered = std::env::split_paths(path_env).filter(|dir| {
+        if dir == wrapper_dir {
+            return false;
+        }
+
+        match (fs::canonicalize(dir).ok(), wrapper_dir_canonical.as_deref()) {
+            (Some(dir), Some(wrapper_dir)) => dir != wrapper_dir,
+            _ => true,
+        }
+    });
+
+    std::env::join_paths(filtered).unwrap_or_else(|_| path_env.to_os_string())
+}
+
+pub fn prepare_real_codex_environment(current_exe: &Path) -> OsString {
+    let Some(path_env) = std::env::var_os("PATH") else {
+        return OsString::new();
+    };
+    let filtered = path_without_wrapper_dir(path_env.as_os_str(), current_exe);
+    std::env::set_var("PATH", &filtered);
+    filtered
+}
+
 pub fn build_remote_launch_args(args: &[OsString], remote_url: impl AsRef<OsStr>) -> Vec<OsString> {
     let mut forwarded = Vec::with_capacity(args.len() + 2);
     forwarded.push(OsString::from("--remote"));

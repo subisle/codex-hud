@@ -11,6 +11,7 @@ pub struct Config {
     pub launcher: LauncherConfig,
     pub display: DisplayConfig,
     pub keymap: KeymapConfig,
+    pub quota: QuotaConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,11 +25,15 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            socket: "/tmp/codex-hud/app-server.sock".to_string(),
+            socket: default_daemon_socket().to_string(),
             auto_start: true,
             reuse_shared_daemon: true,
         }
     }
+}
+
+pub fn default_daemon_socket() -> &'static str {
+    "/tmp/codex-hud/app-server.sock"
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +123,30 @@ impl Default for KeymapConfig {
             toggle_mcp: "6".to_string(),
             toggle_debug: "7".to_string(),
             open_settings: "s".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuotaConfig {
+    pub enabled: bool,
+    pub usage_url: String,
+    pub api_key_env: String,
+    pub provider_label: String,
+    pub timeout_secs: u64,
+    pub poll_secs: u64,
+}
+
+impl Default for QuotaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            usage_url: String::new(),
+            api_key_env: "CODEX_HUD_QUOTA_API_KEY".to_string(),
+            provider_label: "cc-switch".to_string(),
+            timeout_secs: 10,
+            poll_secs: 10,
         }
     }
 }

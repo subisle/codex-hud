@@ -10,6 +10,14 @@ mkdir -p "$INSTALL_DIR"
 cp "$SOURCE_BIN" "$TARGET_BIN"
 chmod 755 "$TARGET_BIN"
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  if command -v codesign >/dev/null 2>&1; then
+    codesign --force --sign - "$TARGET_BIN" >/dev/null
+  else
+    echo "warning: codesign not found; macOS may reject $TARGET_BIN" >&2
+  fi
+fi
+
 RESOLVED_CODEX="$(command -v "$BIN_NAME" 2>/dev/null || true)"
 
 cat <<EOF

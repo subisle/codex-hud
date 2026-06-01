@@ -74,7 +74,54 @@ fn applies_thread_and_rate_limit_fields_from_app_server_messages() {
         snapshot.rate_limit,
         Some(RateLimitSummary {
             used_percent: 42,
+            cost_usd: None,
+            remaining_usd: None,
+            limit_usd: None,
             limit_label: Some("codex".to_string()),
+        })
+    );
+}
+
+#[test]
+fn preserves_rich_rate_limit_fields_after_sparse_updates() {
+    let mut snapshot = blank_snapshot();
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "account/rateLimits/updated",
+            "params": {
+                "rateLimits": {
+                    "limitId": "cc-switch",
+                    "usedPercent": 31,
+                    "cost": 15.5,
+                    "remaining": 34.5,
+                    "limit": 50.0
+                }
+            }
+        })
+    ));
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "account/rateLimits/updated",
+            "params": {
+                "rateLimits": {
+                    "limitId": "codex",
+                    "usedPercent": 32
+                }
+            }
+        })
+    ));
+
+    assert_eq!(
+        snapshot.rate_limit,
+        Some(RateLimitSummary {
+            used_percent: 32,
+            cost_usd: Some(15.5),
+            remaining_usd: Some(34.5),
+            limit_usd: Some(50.0),
+            limit_label: Some("cc-switch".to_string()),
         })
     );
 }
@@ -159,7 +206,7 @@ fn applies_live_app_server_event_names() {
         snapshot.token_usage,
         Some(TokenUsage {
             used: 1200,
-            limit: 64000,
+            limit: 1050000,
         })
     );
 
@@ -199,6 +246,9 @@ fn applies_live_app_server_event_names() {
         snapshot.rate_limit,
         Some(RateLimitSummary {
             used_percent: 31,
+            cost_usd: None,
+            remaining_usd: None,
+            limit_usd: None,
             limit_label: Some("Codex".to_string()),
         })
     );
@@ -304,6 +354,86 @@ fn applies_codex_0135_token_usage_shape_for_context_display() {
         Some(TokenUsage {
             used: 9216,
             limit: 128000,
+        })
+    );
+}
+
+#[test]
+fn uses_known_model_context_window_when_payload_limit_is_stale() {
+    let mut snapshot = blank_snapshot();
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/started",
+            "params": {
+                "thread": {
+                    "id": "thr_gpt55",
+                    "model": "gpt-5.5"
+                }
+            }
+        })
+    ));
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thr_gpt55",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 130000
+                    },
+                    "modelContextWindow": 128000
+                }
+            }
+        })
+    ));
+
+    assert_eq!(
+        snapshot.token_usage,
+        Some(TokenUsage {
+            used: 130000,
+            limit: 1050000,
+        })
+    );
+}
+
+#[test]
+fn does_not_treat_scalar_total_as_context_limit() {
+    let mut snapshot = blank_snapshot();
+
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/started",
+            "params": {
+                "thread": {
+                    "id": "thr_total",
+                    "model": "gpt-5.4-mini"
+                }
+            }
+        })
+    ));
+    assert!(apply_app_server_message(
+        &mut snapshot,
+        &json!({
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thr_total",
+                "tokenUsage": {
+                    "used": 27333,
+                    "total": 27333
+                }
+            }
+        })
+    ));
+
+    assert_eq!(
+        snapshot.token_usage,
+        Some(TokenUsage {
+            used: 27333,
+            limit: 400000,
         })
     );
 }

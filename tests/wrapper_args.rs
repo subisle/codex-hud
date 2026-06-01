@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use codex_hud::wrapper::{
     build_remote_launch_args, cached_unix_remote_support, classify_launch, find_real_codex_in_path,
-    LaunchDisposition,
+    path_without_wrapper_dir, LaunchDisposition,
 };
 use tempfile::tempdir;
 
@@ -159,6 +159,20 @@ EOF
 
     assert!(cached_unix_remote_support(&unix_codex));
     assert!(!cached_unix_remote_support(&ws_codex));
+}
+
+#[test]
+fn path_filter_removes_the_wrapper_directory_but_keeps_real_codex_paths() {
+    let wrapper_dir = tempdir().unwrap();
+    let real_dir = tempdir().unwrap();
+
+    let current_exe = wrapper_dir.path().join("codex");
+    let path_env = std::env::join_paths([wrapper_dir.path(), real_dir.path()]).unwrap();
+
+    let filtered = path_without_wrapper_dir(&path_env, &current_exe);
+    let filtered_dirs: Vec<_> = std::env::split_paths(&filtered).collect();
+
+    assert_eq!(filtered_dirs, vec![real_dir.path().to_path_buf()]);
 }
 
 fn write_executable(path: &PathBuf) {

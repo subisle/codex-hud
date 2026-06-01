@@ -12,11 +12,8 @@ const FG_SEP: &str = "\x1b[38;2;99;112;134m";
 const BG_HUD: &str = "\x1b[48;2;11;16;32m";
 const BOLD: &str = "\x1b[1m";
 
-const RGB_CYAN: (u8, u8, u8) = (8, 233, 255);
-const RGB_PURPLE: (u8, u8, u8) = (176, 138, 255);
 const RGB_YELLOW: (u8, u8, u8) = (255, 210, 41);
 const RGB_GREEN: (u8, u8, u8) = (33, 240, 178);
-const RGB_BLUE: (u8, u8, u8) = (93, 162, 255);
 const RGB_RED: (u8, u8, u8) = (255, 79, 103);
 
 const SOURCE_LABEL: &str = "来源";
@@ -112,16 +109,34 @@ fn git_segment(snapshot: &HudSnapshot) -> String {
 }
 
 fn context_segment(snapshot: &HudSnapshot) -> String {
-    let percent = snapshot
-        .token_usage
-        .as_ref()
-        .and_then(|usage| percent_from_usage(usage.used, usage.limit));
-    format!("上下文 [{}] {}", plain_bar(percent), percent_label(percent))
+    let usage = snapshot.token_usage.as_ref();
+    let percent = usage.and_then(|usage| percent_from_usage(usage.used, usage.limit));
+    let usage_label = usage
+        .map(|usage| format!(" {}", token_usage_label(usage.used, usage.limit)))
+        .unwrap_or_default();
+
+    format!(
+        "上下文 [{}] {}{}",
+        plain_bar(percent),
+        percent_label(percent),
+        usage_label
+    )
 }
 
 fn quota_segment(snapshot: &HudSnapshot) -> String {
-    let percent = snapshot.rate_limit.as_ref().map(|rate| rate.used_percent);
-    format!("$ [{}] {}", plain_bar(percent), percent_label(percent))
+    let Some(rate_limit) = snapshot.rate_limit.as_ref() else {
+        return String::new();
+    };
+
+    let mut parts = Vec::new();
+    if let Some(cost) = rate_limit.cost_usd {
+        parts.push(format!("已用 {}", money_label(cost)));
+    }
+    if let Some(remaining) = rate_limit.remaining_usd {
+        parts.push(format!("余额 {}", money_label(remaining)));
+    }
+
+    parts.join(" ")
 }
 
 fn tools_segment(snapshot: &HudSnapshot) -> String {
@@ -133,7 +148,7 @@ fn percent_from_usage(used: u64, limit: u64) -> Option<u8> {
         return None;
     }
 
-    let percent = used.saturating_mul(100) / limit;
+    let percent = ((u128::from(used) * 100) + (u128::from(limit) / 2)) / u128::from(limit);
     u8::try_from(percent.min(100)).ok()
 }
 
@@ -211,7 +226,7 @@ fn colorize_bottom_line(line: &str) -> String {
     for part in parts {
         if part.starts_with("上下文") {
             output.push(colorize_context_part(part));
-        } else if part.starts_with("$") {
+        } else if part.starts_with("已用") || part.starts_with("余额") {
             output.push(colorize_quota_part(part));
         } else if part.starts_with("MCP") {
             output.push(colorize_tools_part(part));
@@ -224,15 +239,35 @@ fn colorize_bottom_line(line: &str) -> String {
 }
 
 fn colorize_context_part(part: &str) -> String {
-    colorize_metric_part(part, FG_YELLOW, |index, filled| {
-        gradient_cell(index, filled, RGB_GREEN, RGB_YELLOW, RGB_RED)
-    })
+    colorize_metric_part(part, FG_YELLOW, context_cell_color)
 }
 
 fn colorize_quota_part(part: &str) -> String {
-    colorize_metric_part(part, FG_BLUE, |index, filled| {
-        gradient_cell(index, filled, RGB_CYAN, RGB_BLUE, RGB_PURPLE)
-    })
+    let tokens: Vec<&str> = part.split_whitespace().collect();
+    if tokens.is_empty() {
+        return style(part, FG_TEXT, false);
+    }
+
+    let mut output = String::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        if index > 0 {
+            output.push(' ');
+        }
+
+        let token = tokens[index];
+        if (token == "已用" || token == "余额") && index + 1 < tokens.len() {
+            output.push_str(&style(token, FG_TEXT, false));
+            output.push(' ');
+            output.push_str(&style(tokens[index + 1], FG_BLUE, true));
+            index += 2;
+        } else {
+            output.push_str(&style(token, FG_TEXT, false));
+            index += 1;
+        }
+    }
+
+    output
 }
 
 fn colorize_metric_part(
@@ -278,22 +313,12 @@ fn colorize_tools_part(part: &str) -> String {
     )
 }
 
-fn gradient_cell(
-    index: usize,
-    filled: usize,
-    start: (u8, u8, u8),
-    middle: (u8, u8, u8),
-    end: (u8, u8, u8),
-) -> (u8, u8, u8) {
-    if filled <= 1 {
-        return start;
-    }
-
-    let ratio = index as f32 / (filled - 1) as f32;
-    if ratio <= 0.5 {
-        lerp_rgb(start, middle, ratio * 2.0)
+fn context_cell_color(index: usize, _filled: usize) -> (u8, u8, u8) {
+    let position = (index + 1) as f32 / BAR_WIDTH as f32;
+    if position <= 0.8 {
+        lerp_rgb(RGB_GREEN, RGB_YELLOW, position / 0.8)
     } else {
-        lerp_rgb(middle, end, (ratio - 0.5) * 2.0)
+        lerp_rgb(RGB_YELLOW, RGB_RED, (position - 0.8) / 0.2)
     }
 }
 
@@ -333,4 +358,60 @@ fn style(text: &str, fg: &str, bold: bool) -> String {
 fn style_rgb(text: &str, rgb: (u8, u8, u8), bold: bool) -> String {
     let fg = format!("\x1b[38;2;{};{};{}m", rgb.0, rgb.1, rgb.2);
     style(text, &fg, bold)
+}
+
+fn money_label(amount: f64) -> String {
+    let sign = if amount.is_sign_negative() { "-" } else { "" };
+    let amount = amount.abs();
+    if amount >= 1_000_000_000_000_000_000.0 {
+        return format!("{sign}${amount:.2e}");
+    }
+
+    let (scaled, unit) = if amount >= 1_000_000_000_000_000.0 {
+        (amount / 1_000_000_000_000_000.0, "Q")
+    } else if amount >= 1_000_000_000_000.0 {
+        (amount / 1_000_000_000_000.0, "T")
+    } else if amount >= 1_000_000_000.0 {
+        (amount / 1_000_000_000.0, "B")
+    } else if amount >= 1_000_000.0 {
+        (amount / 1_000_000.0, "M")
+    } else if amount >= 1_000.0 {
+        (amount / 1_000.0, "K")
+    } else {
+        (amount, "")
+    };
+
+    format!("{sign}${scaled:.2}{unit}")
+}
+
+fn token_usage_label(used: u64, limit: u64) -> String {
+    format!("{}/{}", compact_u64(used), compact_u64(limit))
+}
+
+fn compact_u64(value: u64) -> String {
+    if value >= 1_000_000_000 {
+        format_scaled(value, 1_000_000_000, "B")
+    } else if value >= 1_000_000 {
+        format_scaled(value, 1_000_000, "M")
+    } else if value >= 1_000 {
+        format_scaled(value, 1_000, "K")
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_scaled(value: u64, unit: u64, suffix: &str) -> String {
+    let scaled = value as f64 / unit as f64;
+    let formatted = if scaled >= 100.0 {
+        format!("{scaled:.0}")
+    } else if scaled >= 10.0 {
+        format!("{scaled:.1}")
+    } else {
+        format!("{scaled:.2}")
+    };
+
+    format!(
+        "{}{suffix}",
+        formatted.trim_end_matches('0').trim_end_matches('.')
+    )
 }

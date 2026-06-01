@@ -7,9 +7,12 @@ pub struct TokenUsage {
     pub limit: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RateLimitSummary {
     pub used_percent: u8,
+    pub cost_usd: Option<f64>,
+    pub remaining_usd: Option<f64>,
+    pub limit_usd: Option<f64>,
     pub limit_label: Option<String>,
 }
 
@@ -20,7 +23,7 @@ pub struct LocalContext {
     pub git_dirty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HudSnapshot {
     pub thread_id: Option<String>,
     pub thread_name: Option<String>,
@@ -78,6 +81,34 @@ impl HudSnapshot {
         ];
 
         parts.join(" | ")
+    }
+
+    pub fn merge_rate_limit(&mut self, incoming: RateLimitSummary) -> bool {
+        match self.rate_limit.as_mut() {
+            Some(current) => {
+                let merged = RateLimitSummary {
+                    used_percent: incoming.used_percent,
+                    cost_usd: incoming.cost_usd.or(current.cost_usd),
+                    remaining_usd: incoming.remaining_usd.or(current.remaining_usd),
+                    limit_usd: incoming.limit_usd.or(current.limit_usd),
+                    limit_label: prefer_limit_label(
+                        current.limit_label.clone(),
+                        incoming.limit_label,
+                    ),
+                };
+
+                if *current == merged {
+                    false
+                } else {
+                    *current = merged;
+                    true
+                }
+            }
+            None => {
+                self.rate_limit = Some(incoming);
+                true
+            }
+        }
     }
 
     pub fn compact_context(&self) -> String {
@@ -263,7 +294,9 @@ fn apply_token_usage(snapshot: &mut HudSnapshot, payload: &Value) -> bool {
         .get("tokenUsage")
         .or_else(|| object.get("usage"))
         .or_else(|| object.get("context"));
-    let Some(token_usage) = candidate.and_then(parse_token_usage) else {
+    let Some(token_usage) =
+        candidate.and_then(|candidate| parse_token_usage(candidate, snapshot.model.as_deref()))
+    else {
         return false;
     };
 
@@ -294,8 +327,7 @@ fn apply_rate_limit(snapshot: &mut HudSnapshot, payload: &Value) -> bool {
         return false;
     };
 
-    snapshot.rate_limit = Some(rate_limit);
-    true
+    snapshot.merge_rate_limit(rate_limit)
 }
 
 fn apply_goal(snapshot: &mut HudSnapshot, payload: &Value) -> bool {
@@ -477,17 +509,12 @@ fn thread_id_matches(snapshot: &HudSnapshot, object: &serde_json::Map<String, Va
     }
 }
 
-fn parse_token_usage(value: &Value) -> Option<TokenUsage> {
+fn parse_token_usage(value: &Value, model: Option<&str>) -> Option<TokenUsage> {
     let object = value.as_object()?;
-    if let (Some(used), Some(limit)) = (
-        object.get("used").and_then(parse_u64),
-        object
-            .get("limit")
-            .or_else(|| object.get("max"))
-            .or_else(|| object.get("total"))
-            .and_then(parse_u64),
-    ) {
-        return Some(TokenUsage { used, limit });
+    if let Some(used) = object.get("used").and_then(parse_u64) {
+        if let Some(limit) = token_limit_from_payload_or_model(object, model) {
+            return Some(TokenUsage { used, limit });
+        }
     }
 
     let total = object.get("total").and_then(Value::as_object);
@@ -495,36 +522,117 @@ fn parse_token_usage(value: &Value) -> Option<TokenUsage> {
         .and_then(|total| total.get("totalTokens"))
         .or_else(|| object.get("totalTokens"))
         .and_then(parse_u64)?;
-    let limit = object
-        .get("modelContextWindow")
-        .or_else(|| object.get("contextWindow"))
-        .or_else(|| object.get("limit"))
-        .and_then(parse_u64)?;
+    let limit = token_limit_from_payload_or_model(object, model)?;
 
     Some(TokenUsage { used, limit })
 }
 
+fn token_limit_from_payload_or_model(
+    object: &serde_json::Map<String, Value>,
+    model: Option<&str>,
+) -> Option<u64> {
+    let explicit = object
+        .get("modelContextWindow")
+        .or_else(|| object.get("contextWindow"))
+        .or_else(|| object.get("limit"))
+        .or_else(|| object.get("max"))
+        .and_then(parse_u64);
+    let model_window = model.and_then(model_context_window);
+
+    match (explicit, model_window) {
+        (Some(explicit), Some(model_window)) => Some(explicit.max(model_window)),
+        (Some(explicit), None) => Some(explicit),
+        (None, Some(model_window)) => Some(model_window),
+        (None, None) => None,
+    }
+}
+
+fn model_context_window(model: &str) -> Option<u64> {
+    let model = model.to_ascii_lowercase();
+    let model = model.strip_prefix("openai.").unwrap_or(&model);
+    let model = model.strip_prefix("openai/").unwrap_or(model);
+
+    if model.starts_with("gpt-5.5")
+        || model.starts_with("gpt-5.4-pro")
+        || model.starts_with("gpt-5.4")
+    {
+        if model.starts_with("gpt-5.4-mini") || model.starts_with("gpt-5.4-nano") {
+            Some(400_000)
+        } else {
+            Some(1_050_000)
+        }
+    } else if model.starts_with("gpt-5-mini") || model.starts_with("gpt-5-nano") {
+        Some(400_000)
+    } else {
+        None
+    }
+}
+
 fn parse_rate_limit(value: &Value) -> Option<RateLimitSummary> {
     let object = value.as_object()?;
-    let used_percent = parse_u8(
-        object
-            .get("usedPercent")
-            .or_else(|| object.get("used_percent"))
-            .or_else(|| object.get("usagePercent"))
-            .or_else(|| object.get("percentage"))
-            .or_else(|| {
-                object
-                    .get("primary")
-                    .and_then(Value::as_object)
-                    .and_then(|primary| {
-                        primary
-                            .get("usedPercent")
-                            .or_else(|| primary.get("used_percent"))
-                            .or_else(|| primary.get("usagePercent"))
-                            .or_else(|| primary.get("percentage"))
-                    })
-            })?,
-    )?;
+    let quota = object.get("quota").and_then(Value::as_object);
+    let usage = object.get("usage").and_then(Value::as_object);
+    let today = usage.and_then(|usage| usage.get("today").and_then(Value::as_object));
+
+    let cost_usd = object
+        .get("cost")
+        .or_else(|| object.get("actualCost"))
+        .or_else(|| object.get("actual_cost"))
+        .and_then(parse_f64)
+        .or_else(|| object.get("used").and_then(parse_f64))
+        .or_else(|| {
+            quota
+                .and_then(|quota| quota.get("used"))
+                .and_then(parse_f64)
+        })
+        .or_else(|| {
+            today
+                .and_then(|today| today.get("actual_cost"))
+                .and_then(parse_f64)
+        })
+        .or_else(|| {
+            today
+                .and_then(|today| today.get("cost"))
+                .and_then(parse_f64)
+        });
+    let remaining_usd = object
+        .get("remaining")
+        .or_else(|| object.get("balance"))
+        .and_then(parse_f64)
+        .or_else(|| {
+            quota
+                .and_then(|quota| quota.get("remaining"))
+                .and_then(parse_f64)
+        })
+        .or_else(|| {
+            quota
+                .and_then(|quota| quota.get("balance"))
+                .and_then(parse_f64)
+        });
+    let limit_usd = object.get("limit").and_then(parse_f64).or_else(|| {
+        quota
+            .and_then(|quota| quota.get("limit"))
+            .and_then(parse_f64)
+    });
+    let used_percent = object
+        .get("usedPercent")
+        .or_else(|| object.get("used_percent"))
+        .or_else(|| object.get("usagePercent"))
+        .or_else(|| object.get("percentage"))
+        .or_else(|| {
+            object
+                .get("primary")
+                .and_then(Value::as_object)
+                .and_then(|primary| {
+                    primary
+                        .get("usedPercent")
+                        .or_else(|| primary.get("used_percent"))
+                        .or_else(|| primary.get("usagePercent"))
+                        .or_else(|| primary.get("percentage"))
+                })
+        })
+        .and_then(parse_u8)
+        .or_else(|| derived_percent(cost_usd, remaining_usd, limit_usd))?;
     let limit_label = object
         .get("limitName")
         .or_else(|| object.get("limitId"))
@@ -540,6 +648,9 @@ fn parse_rate_limit(value: &Value) -> Option<RateLimitSummary> {
 
     Some(RateLimitSummary {
         used_percent,
+        cost_usd,
+        remaining_usd,
+        limit_usd,
         limit_label,
     })
 }
@@ -576,12 +687,48 @@ fn parse_u8(value: &Value) -> Option<u8> {
     u8::try_from(value).ok()
 }
 
+fn parse_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
+}
+
+fn derived_percent(
+    cost_usd: Option<f64>,
+    remaining_usd: Option<f64>,
+    limit_usd: Option<f64>,
+) -> Option<u8> {
+    let limit = limit_usd?;
+    if limit <= 0.0 {
+        return None;
+    }
+
+    let used = cost_usd.or_else(|| remaining_usd.map(|remaining| (limit - remaining).max(0.0)))?;
+    let percent = ((used / limit) * 100.0).round().clamp(0.0, 100.0);
+    Some(percent as u8)
+}
+
+fn prefer_limit_label(current: Option<String>, incoming: Option<String>) -> Option<String> {
+    match (current, incoming) {
+        (Some(current), Some(incoming))
+            if current.starts_with("cc-switch") && !incoming.starts_with("cc-switch") =>
+        {
+            Some(current)
+        }
+        (_, Some(incoming)) => Some(incoming),
+        (Some(current), None) => Some(current),
+        (None, None) => None,
+    }
+}
+
 fn usage_percent(used: u64, limit: u64) -> Option<u8> {
     if limit == 0 {
         return None;
     }
 
-    let percent = used.saturating_mul(100) / limit;
+    let percent = ((u128::from(used) * 100) + (u128::from(limit) / 2)) / u128::from(limit);
     u8::try_from(percent.min(100)).ok()
 }
 

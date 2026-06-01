@@ -18,6 +18,7 @@ toml = "0.8"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = "0.24"
 unicode-width = "0.2"
+ureq = { version = "2", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

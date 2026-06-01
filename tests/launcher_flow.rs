@@ -49,6 +49,52 @@ status_rows = 3
 }
 
 #[test]
+fn default_daemon_socket_is_scoped_to_the_launch_working_directory() {
+    let temp = tempdir().unwrap();
+    let fake_codex = temp.path().join("codex");
+    write_unix_remote_fake_codex(&fake_codex);
+    write_config(
+        temp.path(),
+        r#"
+[launcher]
+surface = "fallback"
+fallback_surface = "split"
+status_rows = 3
+"#,
+    );
+    let first_cwd = temp.path().join("first");
+    let second_cwd = temp.path().join("second");
+    fs::create_dir_all(&first_cwd).unwrap();
+    fs::create_dir_all(&second_cwd).unwrap();
+
+    let first = run_codex_from(
+        &temp,
+        &first_cwd,
+        &[],
+        Some(("TERM", "xterm-256color")),
+        None,
+    );
+    let second = run_codex_from(
+        &temp,
+        &second_cwd,
+        &[],
+        Some(("TERM", "xterm-256color")),
+        None,
+    );
+
+    assert!(first.status.success());
+    assert!(second.status.success());
+    let first_stdout = String::from_utf8(first.stdout).unwrap();
+    let second_stdout = String::from_utf8(second.stdout).unwrap();
+    let first_remote = remote_arg_from_stdout(&first_stdout);
+    let second_remote = remote_arg_from_stdout(&second_stdout);
+
+    assert_ne!(first_remote, second_remote);
+    assert!(first_remote.starts_with("unix:///tmp/codex-hud/app-server-"));
+    assert!(second_remote.starts_with("unix:///tmp/codex-hud/app-server-"));
+}
+
+#[test]
 fn interactive_launch_falls_back_for_unsupported_terminals_without_blocking_codex() {
     let temp = tempdir().unwrap();
     let fake_codex = temp.path().join("codex");
@@ -232,9 +278,20 @@ fn run_codex(
     term: Option<(&str, &str)>,
     lines: Option<(&str, &str)>,
 ) -> std::process::Output {
+    run_codex_from(path_dir, std::path::Path::new("."), args, term, lines)
+}
+
+fn run_codex_from(
+    path_dir: &tempfile::TempDir,
+    cwd: &std::path::Path,
+    args: &[&str],
+    term: Option<(&str, &str)>,
+    lines: Option<(&str, &str)>,
+) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_codex"));
     command.env("PATH", path_dir.path());
     command.env("XDG_CONFIG_HOME", path_dir.path());
+    command.current_dir(cwd);
     if let Some((key, value)) = term {
         command.env(key, value);
     }
@@ -244,6 +301,16 @@ fn run_codex(
     command.args(args);
 
     command.output().unwrap()
+}
+
+fn remote_arg_from_stdout(stdout: &str) -> &str {
+    stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("ARGS:--remote ")
+                .and_then(|rest| rest.split_whitespace().next())
+        })
+        .unwrap_or_else(|| panic!("missing remote arg in stdout: {stdout}"))
 }
 
 fn write_config(temp_dir: &std::path::Path, contents: &str) {

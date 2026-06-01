@@ -18,6 +18,9 @@ fn snapshot() -> HudSnapshot {
         }),
         rate_limit: Some(RateLimitSummary {
             used_percent: 31,
+            cost_usd: Some(15.5),
+            remaining_usd: Some(34.5),
+            limit_usd: Some(50.0),
             limit_label: Some("codex".to_string()),
         }),
         local: LocalContext {
@@ -45,7 +48,7 @@ fn compact_rendering_stays_dense_and_contains_core_fields() {
         visible,
         vec![
             "[GPT-5.4] 来源 openai | codex-hud git:(main*)".to_string(),
-            "上下文 [■■■■■■■···] 72% | $ [■■■·······] 31% | MCP x3".to_string(),
+            "上下文 [■■■■■■■···] 72% 9.22K/12.8K | 已用 $15.50 余额 $34.50 | MCP x3".to_string(),
         ]
     );
 }
@@ -86,8 +89,54 @@ fn compact_rendering_shows_progress_placeholders_when_usage_is_missing() {
     let rendered = normalize_ansi_lines(&render_compact_ansi(&snapshot, 100).join("\n")).join("\n");
 
     assert!(rendered.contains("上下文 [··········] 0%"));
-    assert!(rendered.contains("$ [··········] 0%"));
+    assert!(!rendered.contains("$ ["));
     assert!(rendered.contains("MCP x3"));
+}
+
+#[test]
+fn compact_rendering_abbreviates_large_money_values_without_quota_bar() {
+    let mut snapshot = snapshot();
+    snapshot.rate_limit = Some(RateLimitSummary {
+        used_percent: 0,
+        cost_usd: Some(439.98),
+        remaining_usd: Some(1_112_221_004.39),
+        limit_usd: Some(1_112_221_444.37),
+        limit_label: Some("Sub2API".to_string()),
+    });
+
+    let rendered = normalize_ansi_lines(&render_compact_ansi(&snapshot, 120).join("\n")).join("\n");
+
+    assert!(rendered.contains("已用 $439.98 余额 $1.11B"));
+    assert!(!rendered.contains("$ ["));
+    assert!(!rendered.contains("1112221004.39"));
+}
+
+#[test]
+fn compact_rendering_abbreviates_money_across_common_ranges() {
+    let cases = [
+        (999.99, "$999.99"),
+        (2_932.22223232, "$2.93K"),
+        (27_333.0, "$27.33K"),
+        (1_112_221_004.39, "$1.11B"),
+        (7_776_666_666_666_666.0, "$7.78Q"),
+        (1_234_000_000_000_000_000.0, "$1.23e18"),
+    ];
+
+    for (remaining, expected) in cases {
+        let mut snapshot = snapshot();
+        snapshot.rate_limit = Some(RateLimitSummary {
+            used_percent: 0,
+            cost_usd: None,
+            remaining_usd: Some(remaining),
+            limit_usd: None,
+            limit_label: Some("Sub2API".to_string()),
+        });
+
+        let rendered =
+            normalize_ansi_lines(&render_compact_ansi(&snapshot, 120).join("\n")).join("\n");
+
+        assert!(rendered.contains(&format!("余额 {expected}")), "{rendered}");
+    }
 }
 
 #[test]
@@ -126,8 +175,8 @@ fn compact_rendering_uses_real_context_usage_from_app_server_shape() {
 
     let rendered = normalize_ansi_lines(&render_compact_ansi(&snapshot, 100).join("\n")).join("\n");
 
-    assert!(rendered.contains("上下文 [■"));
-    assert!(rendered.contains("7%"));
+    assert!(rendered.contains("上下文 [··········] 1%"));
+    assert!(rendered.contains("9.22K/1.05M"));
     assert!(!rendered.contains("上下文 [··········] --"));
 }
 
@@ -135,7 +184,7 @@ fn compact_rendering_uses_real_context_usage_from_app_server_shape() {
 fn compact_ansi_rendering_adds_terminal_color_without_changing_content() {
     let plain = vec![
         "[GPT-5.4] 来源 openai | codex-hud git:(main*)".to_string(),
-        "上下文 [■■■■■■■···] 72% | $ [■■■·······] 31% | MCP x3".to_string(),
+        "上下文 [■■■■■■■···] 72% 9.22K/12.8K | 已用 $15.50 余额 $34.50 | MCP x3".to_string(),
     ];
     let colored = render_compact_ansi(&snapshot(), 100);
     let colored_joined = colored.join("\n");
@@ -144,7 +193,23 @@ fn compact_ansi_rendering_adds_terminal_color_without_changing_content() {
     assert!(colored[0].contains("\x1b[38;2;8;233;255m"));
     assert!(colored[0].contains("\x1b[38;2;176;138;255m"));
     assert!(colored[1].contains("\x1b[38;2;"));
+    assert!(colored[1].contains("\x1b[38;2;93;162;255m$15.50"));
+    assert!(colored[1].contains("\x1b[38;2;93;162;255m$34.50"));
     assert_eq!(normalize_ansi_lines(&colored_joined), plain);
+}
+
+#[test]
+fn compact_context_progress_does_not_turn_red_at_low_usage() {
+    let mut snapshot = snapshot();
+    snapshot.token_usage = Some(TokenUsage {
+        used: 1_700,
+        limit: 10_000,
+    });
+
+    let rendered = render_compact_ansi(&snapshot, 120).join("\n");
+
+    assert!(normalize_ansi_lines(&rendered).join("\n").contains("17%"));
+    assert!(!rendered.contains("\x1b[38;2;255;79;103m"));
 }
 
 #[test]

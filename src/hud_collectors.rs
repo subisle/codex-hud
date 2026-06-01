@@ -11,6 +11,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+use crate::config::QuotaConfig;
 use crate::hud::{apply_app_server_message, HudSnapshot};
 use crate::protocol::{AppServerClient, ClientInfo};
 
@@ -26,6 +27,7 @@ impl HudCollectors {
         snapshot: Arc<Mutex<HudSnapshot>>,
         stop: Arc<AtomicBool>,
         hud_dirty: Sender<()>,
+        quota_config: QuotaConfig,
     ) -> Self {
         let mut handles = Vec::new();
         let consume_events = hud_events.is_none();
@@ -68,8 +70,8 @@ impl HudCollectors {
             hud_dirty.clone(),
         ));
 
-        if let Some(db_path) = cc_switch::db_path() {
-            handles.push(cc_switch::spawn(db_path, snapshot, stop, hud_dirty));
+        if let Some(source) = cc_switch::QuotaSource::from_config(&quota_config) {
+            handles.push(cc_switch::spawn(source, snapshot, stop, hud_dirty));
         }
 
         Self { handles }
