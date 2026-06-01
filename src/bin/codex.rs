@@ -8,16 +8,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    mpsc::{self, Receiver},
     Arc, Mutex,
 };
-use std::thread;
 use std::time::{Duration, Instant};
 
 use codex_hud::bridge::LocalWsBridgeHandle;
 use codex_hud::config::Config;
-use codex_hud::hud::{apply_app_server_message, HudSnapshot, LocalContext, RateLimitSummary};
-use codex_hud::protocol::{AppServerClient, ClientInfo};
+use codex_hud::hud::{HudSnapshot, LocalContext};
+use codex_hud::hud_collectors::HudCollectors;
 use codex_hud::pty::{
     launcher_env_entries, launcher_environment, terminal_size_from_runtime_or_env,
     LauncherEnvironment,
@@ -310,7 +309,7 @@ fn run_interactive_pty_host(
     });
     let hud_stop = Arc::new(AtomicBool::new(false));
     let (hud_dirty_tx, hud_dirty_rx) = mpsc::channel();
-    let mut hud_collectors = spawn_hud_state_collectors(
+    let hud_collectors = HudCollectors::spawn(
         real_codex.clone(),
         app_server_socket,
         hud_events,
@@ -402,7 +401,7 @@ fn run_interactive_pty_host(
     }
     drop(writer);
     hud_stop.store(true, Ordering::Relaxed);
-    let collector_result = join_all_handles(&mut hud_collectors);
+    let collector_result = hud_collectors.join();
     let output_result = output_thread
         .join()
         .map_err(|_| io::Error::other("PTY output forwarding thread panicked"))?;
@@ -436,441 +435,6 @@ fn launcher_hud_snapshot() -> HudSnapshot {
         mcp_count: 0,
         skill_count: 0,
     }
-}
-
-fn spawn_hud_state_collectors(
-    real_codex: PathBuf,
-    socket_path: PathBuf,
-    hud_events: Option<Receiver<serde_json::Value>>,
-    snapshot: Arc<Mutex<HudSnapshot>>,
-    stop: Arc<AtomicBool>,
-    hud_dirty: Sender<()>,
-) -> Vec<thread::JoinHandle<()>> {
-    let mut handles = Vec::new();
-    let consume_events = hud_events.is_none();
-
-    if let Some(hud_events) = hud_events {
-        let snapshot = Arc::clone(&snapshot);
-        let stop = Arc::clone(&stop);
-        let hud_dirty = hud_dirty.clone();
-        handles.push(thread::spawn(move || {
-            collect_bridge_events(hud_events, snapshot, stop, hud_dirty);
-        }));
-    }
-
-    if socket_path.exists() {
-        let snapshot = Arc::clone(&snapshot);
-        let stop = Arc::clone(&stop);
-        let hud_dirty = hud_dirty.clone();
-        handles.push(thread::spawn(move || {
-            let Ok(runtime) = tokio::runtime::Runtime::new() else {
-                return;
-            };
-
-            runtime.block_on(async move {
-                collect_hud_state(socket_path, snapshot, stop, consume_events, hud_dirty).await;
-            });
-        }));
-    }
-
-    {
-        let snapshot = Arc::clone(&snapshot);
-        let stop = Arc::clone(&stop);
-        let hud_dirty = hud_dirty.clone();
-        handles.push(thread::spawn(move || {
-            collect_mcp_state(real_codex, snapshot, stop, hud_dirty);
-        }));
-    }
-
-    if let Some(db_path) = cc_switch_db_path() {
-        let snapshot = Arc::clone(&snapshot);
-        let stop = Arc::clone(&stop);
-        let hud_dirty = hud_dirty.clone();
-        handles.push(thread::spawn(move || {
-            collect_cc_switch_quota_state(db_path, snapshot, stop, hud_dirty);
-        }));
-    }
-
-    handles
-}
-
-fn collect_mcp_state(
-    real_codex: PathBuf,
-    snapshot: Arc<Mutex<HudSnapshot>>,
-    stop: Arc<AtomicBool>,
-    hud_dirty: Sender<()>,
-) {
-    let mut last_count = None;
-
-    while !stop.load(Ordering::Relaxed) {
-        if let Ok(count) = read_enabled_mcp_count(&real_codex) {
-            if last_count != Some(count) {
-                if let Ok(mut guard) = snapshot.lock() {
-                    if guard.mcp_count != count {
-                        guard.mcp_count = count;
-                        notify_hud_dirty(&hud_dirty);
-                    }
-                }
-                last_count = Some(count);
-            }
-        }
-
-        for _ in 0..20 {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-    }
-}
-
-fn read_enabled_mcp_count(real_codex: &Path) -> io::Result<u64> {
-    let output = Command::new(real_codex)
-        .args(["mcp", "list", "--json"])
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "codex mcp list --json exited with {status}",
-            status = output.status
-        )));
-    }
-
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(io_error)?;
-    Ok(count_enabled_mcp_servers(&value) as u64)
-}
-
-fn count_enabled_mcp_servers(value: &serde_json::Value) -> usize {
-    match value {
-        serde_json::Value::Array(items) => {
-            items.iter().map(count_enabled_mcp_servers).sum::<usize>()
-        }
-        serde_json::Value::Object(object) => {
-            if let Some(servers) = object.get("servers").and_then(serde_json::Value::as_array) {
-                return servers.iter().map(count_enabled_mcp_servers).sum();
-            }
-
-            if let Some(enabled) = object.get("enabled").and_then(serde_json::Value::as_bool) {
-                return usize::from(enabled);
-            }
-
-            if object.contains_key("transport")
-                || object.contains_key("command")
-                || object.contains_key("url")
-            {
-                return 1;
-            }
-
-            0
-        }
-        _ => 0,
-    }
-}
-
-fn collect_cc_switch_quota_state(
-    db_path: PathBuf,
-    snapshot: Arc<Mutex<HudSnapshot>>,
-    stop: Arc<AtomicBool>,
-    hud_dirty: Sender<()>,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        if let Ok(Some(rate_limit)) = read_cc_switch_rate_limit(&db_path) {
-            if let Ok(mut guard) = snapshot.lock() {
-                if guard.rate_limit.as_ref() != Some(&rate_limit) {
-                    guard.rate_limit = Some(rate_limit);
-                    notify_hud_dirty(&hud_dirty);
-                }
-            }
-        }
-
-        for _ in 0..20 {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-    }
-}
-
-fn cc_switch_db_path() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("CODEX_HUD_CC_SWITCH_DB") {
-        return Some(path.into());
-    }
-
-    env::var_os("HOME").map(|home| PathBuf::from(home).join(".cc-switch/cc-switch.db"))
-}
-
-fn read_cc_switch_rate_limit(db_path: &Path) -> io::Result<Option<RateLimitSummary>> {
-    if !db_path.exists() {
-        return Ok(None);
-    }
-
-    let output = Command::new("sqlite3")
-        .arg("-noheader")
-        .arg("-separator")
-        .arg("\t")
-        .arg(db_path)
-        .arg(CC_SWITCH_QUOTA_QUERY)
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "sqlite3 exited with {status}",
-            status = output.status
-        )));
-    }
-
-    let row = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_cc_switch_quota_row(row.trim_end()))
-}
-
-const CC_SWITCH_QUOTA_QUERY: &str = r#"
-WITH provider AS (
-    SELECT
-        name,
-        CAST(NULLIF(limit_daily_usd, '') AS REAL) AS daily_limit,
-        CAST(NULLIF(limit_monthly_usd, '') AS REAL) AS monthly_limit
-    FROM providers
-    WHERE app_type = 'codex'
-    ORDER BY is_current DESC, sort_index, name
-    LIMIT 1
-),
-selected AS (
-    SELECT
-        name,
-        CASE
-            WHEN daily_limit > 0 THEN 'daily'
-            WHEN monthly_limit > 0 THEN 'monthly'
-            ELSE 'none'
-        END AS scope,
-        CASE
-            WHEN daily_limit > 0 THEN daily_limit
-            WHEN monthly_limit > 0 THEN monthly_limit
-            ELSE 0
-        END AS limit_usd
-    FROM provider
-),
-usage AS (
-    SELECT
-        CASE
-            WHEN (SELECT scope FROM selected) = 'daily' THEN (
-                SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0)
-                FROM proxy_request_logs
-                WHERE app_type = 'codex'
-                  AND date(created_at, 'unixepoch', 'localtime') = date('now', 'localtime')
-            )
-            WHEN (SELECT scope FROM selected) = 'monthly' THEN (
-                SELECT COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0)
-                FROM proxy_request_logs
-                WHERE app_type = 'codex'
-                  AND strftime('%Y-%m', created_at, 'unixepoch', 'localtime') = strftime('%Y-%m', 'now', 'localtime')
-            )
-            ELSE 0
-        END AS used_usd
-)
-SELECT
-    selected.scope,
-    printf('%.6f', usage.used_usd),
-    printf('%.6f', selected.limit_usd),
-    selected.name
-FROM selected, usage;
-"#;
-
-fn parse_cc_switch_quota_row(row: &str) -> Option<RateLimitSummary> {
-    if row.trim().is_empty() {
-        return None;
-    }
-
-    let mut columns = row.split('\t');
-    let scope = columns.next()?.trim();
-    let used = parse_f64(columns.next()?)?;
-    let limit = parse_f64(columns.next()?)?;
-    let provider = columns
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    let used_percent = if limit > 0.0 {
-        ((used / limit) * 100.0).round().clamp(0.0, 100.0) as u8
-    } else {
-        0
-    };
-    let limit_label = match (scope, provider) {
-        ("daily", Some(provider)) => Some(format!("cc-switch daily {provider}")),
-        ("daily", None) => Some("cc-switch daily".to_string()),
-        ("monthly", Some(provider)) => Some(format!("cc-switch monthly {provider}")),
-        ("monthly", None) => Some("cc-switch monthly".to_string()),
-        (_, Some(provider)) => Some(format!("cc-switch no limit {provider}")),
-        _ => Some("cc-switch no limit".to_string()),
-    };
-
-    Some(RateLimitSummary {
-        used_percent,
-        limit_label,
-    })
-}
-
-fn parse_f64(value: &str) -> Option<f64> {
-    value.trim().parse().ok()
-}
-
-fn collect_bridge_events(
-    hud_events: Receiver<serde_json::Value>,
-    snapshot: Arc<Mutex<HudSnapshot>>,
-    stop: Arc<AtomicBool>,
-    hud_dirty: Sender<()>,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        match hud_events.recv_timeout(Duration::from_millis(250)) {
-            Ok(message) => {
-                if let Ok(mut guard) = snapshot.lock() {
-                    if apply_app_server_message(&mut guard, &message) {
-                        notify_hud_dirty(&hud_dirty);
-                    }
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return,
-        }
-    }
-}
-
-async fn collect_hud_state(
-    socket_path: PathBuf,
-    snapshot: Arc<Mutex<HudSnapshot>>,
-    stop: Arc<AtomicBool>,
-    consume_events: bool,
-    hud_dirty: Sender<()>,
-) {
-    let client_info = ClientInfo {
-        name: "codex-hud".to_string(),
-        title: Some("Codex HUD".to_string()),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    };
-
-    while !stop.load(Ordering::Relaxed) {
-        let mut client = match AppServerClient::connect_unix(&socket_path).await {
-            Ok(client) => client,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                continue;
-            }
-        };
-
-        let initialized = tokio::time::timeout(
-            Duration::from_secs(1),
-            client.initialize(client_info.clone()),
-        )
-        .await;
-        if !matches!(initialized, Ok(Ok(_))) {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            continue;
-        }
-        let initialized =
-            tokio::time::timeout(Duration::from_millis(500), client.initialized()).await;
-        if !matches!(initialized, Ok(Ok(()))) {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            continue;
-        }
-
-        let rate_limits = tokio::time::timeout(
-            Duration::from_millis(500),
-            client.account_rate_limits_read(),
-        )
-        .await;
-        if let Ok(Ok(rate_limits)) = rate_limits {
-            let mut guard = match snapshot.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
-            if apply_app_server_message(&mut guard, &serde_json::json!({"result": rate_limits})) {
-                notify_hud_dirty(&hud_dirty);
-            }
-        }
-
-        if consume_events {
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                let message =
-                    match tokio::time::timeout(Duration::from_millis(250), client.next_message())
-                        .await
-                    {
-                        Ok(Ok(message)) => message,
-                        Ok(Err(_)) => break,
-                        Err(_) => continue,
-                    };
-
-                if let Ok(mut guard) = snapshot.lock() {
-                    if apply_app_server_message(&mut guard, &message) {
-                        notify_hud_dirty(&hud_dirty);
-                    }
-                }
-            }
-        } else {
-            let mut known_thread_id = snapshot
-                .lock()
-                .ok()
-                .and_then(|guard| guard.thread_id.clone());
-
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                let current_thread_id = snapshot
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.thread_id.clone());
-
-                if current_thread_id.is_some() && current_thread_id != known_thread_id {
-                    if let Some(thread_id) = current_thread_id.clone() {
-                        let thread = tokio::time::timeout(
-                            Duration::from_millis(500),
-                            client.thread_read(&thread_id, false),
-                        )
-                        .await;
-                        if let Ok(Ok(thread)) = thread {
-                            if let Ok(mut guard) = snapshot.lock() {
-                                if apply_app_server_message(
-                                    &mut guard,
-                                    &serde_json::json!({"result": thread}),
-                                ) {
-                                    notify_hud_dirty(&hud_dirty);
-                                }
-                            }
-                        }
-                        known_thread_id = current_thread_id;
-                    }
-                }
-
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-fn join_all_handles(handles: &mut Vec<thread::JoinHandle<()>>) -> io::Result<()> {
-    for handle in handles.drain(..) {
-        handle
-            .join()
-            .map_err(|_| io::Error::other("HUD collector thread panicked"))?;
-    }
-    Ok(())
-}
-
-fn drain_hud_dirty(hud_dirty: &Receiver<()>) -> bool {
-    let mut dirty = false;
-    while hud_dirty.try_recv().is_ok() {
-        dirty = true;
-    }
-    dirty
-}
-
-fn notify_hud_dirty(hud_dirty: &Sender<()>) {
-    let _ = hud_dirty.send(());
 }
 
 fn draw_inline_hud(
@@ -940,6 +504,14 @@ fn git_worktree_is_dirty() -> bool {
     };
 
     output.status.success() && !output.stdout.is_empty()
+}
+
+fn drain_hud_dirty(hud_dirty: &Receiver<()>) -> bool {
+    let mut dirty = false;
+    while hud_dirty.try_recv().is_ok() {
+        dirty = true;
+    }
+    dirty
 }
 
 fn copy_pty_output(
@@ -1204,39 +776,5 @@ mod tests {
         assert!(rendered.contains("codex-hud"), "{rendered:?}");
         assert!(rendered.contains("来源"), "{rendered:?}");
         assert!(rendered.contains("openai"), "{rendered:?}");
-    }
-
-    #[test]
-    fn counts_enabled_mcp_servers_from_json_payloads() {
-        let value = serde_json::json!([
-            { "name": "alpha", "enabled": true },
-            { "name": "beta", "enabled": false },
-            {
-                "name": "gamma",
-                "transport": { "type": "stdio" }
-            }
-        ]);
-
-        assert_eq!(count_enabled_mcp_servers(&value), 2);
-    }
-
-    #[test]
-    fn parses_cc_switch_quota_rows() {
-        let rate_limit = parse_cc_switch_quota_row("daily\t12.500000\t50.000000\tSub2API").unwrap();
-        assert_eq!(rate_limit.used_percent, 25);
-        assert_eq!(
-            rate_limit.limit_label.as_deref(),
-            Some("cc-switch daily Sub2API")
-        );
-    }
-
-    #[test]
-    fn parses_cc_switch_rows_without_limits() {
-        let rate_limit = parse_cc_switch_quota_row("none\t0.000000\t0.000000\tSub2API").unwrap();
-        assert_eq!(rate_limit.used_percent, 0);
-        assert_eq!(
-            rate_limit.limit_label.as_deref(),
-            Some("cc-switch no limit Sub2API")
-        );
     }
 }
