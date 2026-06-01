@@ -12,13 +12,14 @@
 
 ## 安装
 
-当前最短安装方式：
+使用 macOS arm64 release 包安装：
 
 ```bash
-git clone https://github.com/subisle/codex-hud.git
-cd codex-hud
-cargo build --release
-./install.sh
+curl -L -o codex-hud-v0.1.0-aarch64-apple-darwin.tar.gz \
+  https://github.com/subisle/codex-hud/releases/download/v0.1.0/codex-hud-v0.1.0-aarch64-apple-darwin.tar.gz
+tar -xzf codex-hud-v0.1.0-aarch64-apple-darwin.tar.gz
+cd codex-hud-v0.1.0-aarch64-apple-darwin
+./install.sh ./codex
 ```
 
 确认 wrapper 和真实 Codex 都能被找到：
@@ -37,16 +38,10 @@ export PATH="$HOME/.local/bin:$PATH"
 
 macOS 上 `install.sh` 会在复制 wrapper 后执行 ad-hoc codesign，避免系统把本地二进制判定为 `Code Signature Invalid` 并直接显示 `killed codex`。
 
-后续发布后会补更短的安装方式：
+后续会补 Homebrew 安装方式：
 
 ```bash
 brew install subisle/tap/codex-hud
-```
-
-或：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/subisle/codex-hud/main/install.sh | sh
 ```
 
 ## 让 Codex 帮你安装
@@ -57,14 +52,14 @@ curl -fsSL https://raw.githubusercontent.com/subisle/codex-hud/main/install.sh |
 请帮我在当前 macOS 终端安装 codex-hud。
 
 目标：
-1. 从 https://github.com/subisle/codex-hud.git clone 项目。
-2. 进入项目后运行 cargo build --release 和 ./install.sh。
+1. 从 https://github.com/subisle/codex-hud/releases 下载最新 macOS arm64 release 包。
+2. 解压后在目录里运行 ./install.sh ./codex。
 3. 安装后确认 which -a codex 的第一个结果是 ~/.local/bin/codex。
 4. 确认 which -a codex 后面还能找到真实 Codex CLI。
 5. 如果 ~/.local/bin 不在 PATH，请只给出需要添加到 shell 配置里的命令，不要覆盖真实 Codex。
 6. 安装完成后运行 codex --help 做直通验证。
 
-请先检查本机是否已有 Rust、Cargo、真实 Codex CLI 和 PATH 配置，再执行安装。
+请先检查本机是否已有真实 Codex CLI 和 PATH 配置，再执行安装。
 ```
 
 ## 什么是 codex-hud？
@@ -195,11 +190,10 @@ poll_secs = 10
 
 ### 运行后只显示 `killed codex`
 
-macOS 可能会因为本地复制后的二进制签名无效而直接杀掉进程。先重新运行安装脚本：
+macOS 可能会因为本地复制后的二进制签名无效而直接杀掉进程。先在解压后的 release 包目录里重新运行安装脚本：
 
 ```bash
-cargo build --release
-./install.sh
+./install.sh ./codex
 ```
 
 如果仍然失败，可以手动重签名：

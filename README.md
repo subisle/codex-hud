@@ -12,13 +12,14 @@ The current version focuses on macOS terminal environments. More terminal and pl
 
 ## Installation
 
-Current shortest install path:
+Install from the macOS arm64 release package:
 
 ```bash
-git clone https://github.com/subisle/codex-hud.git
-cd codex-hud
-cargo build --release
-./install.sh
+curl -L -o codex-hud-v0.1.0-aarch64-apple-darwin.tar.gz \
+  https://github.com/subisle/codex-hud/releases/download/v0.1.0/codex-hud-v0.1.0-aarch64-apple-darwin.tar.gz
+tar -xzf codex-hud-v0.1.0-aarch64-apple-darwin.tar.gz
+cd codex-hud-v0.1.0-aarch64-apple-darwin
+./install.sh ./codex
 ```
 
 Confirm that both the wrapper and the real Codex CLI can be found:
@@ -37,16 +38,10 @@ export PATH="$HOME/.local/bin:$PATH"
 
 On macOS, `install.sh` runs ad-hoc codesign after copying the wrapper. This avoids the system rejecting the local binary as `Code Signature Invalid` and showing only `killed codex`.
 
-Shorter install methods will be added after release:
+Homebrew installation will be added later:
 
 ```bash
 brew install subisle/tap/codex-hud
-```
-
-Or:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/subisle/codex-hud/main/install.sh | sh
 ```
 
 ## Ask Codex To Install It
@@ -57,14 +52,14 @@ If you already use Codex CLI, you can send this prompt directly to Codex:
 Please install codex-hud in the current macOS terminal.
 
 Goals:
-1. Clone the project from https://github.com/subisle/codex-hud.git.
-2. Enter the project and run cargo build --release and ./install.sh.
+1. Download the latest macOS arm64 release package from https://github.com/subisle/codex-hud/releases.
+2. Extract it and run ./install.sh ./codex from the extracted directory.
 3. After installation, confirm that the first result of which -a codex is ~/.local/bin/codex.
 4. Confirm that which -a codex still finds the real Codex CLI later.
 5. If ~/.local/bin is not in PATH, only provide the command that should be added to the shell config. Do not overwrite the real Codex.
 6. After installation, run codex --help as a passthrough check.
 
-Please first check whether Rust, Cargo, the real Codex CLI, and PATH are already configured on this machine before installing.
+Please first check whether the real Codex CLI and PATH are already configured on this machine before installing.
 ```
 
 ## What Is codex-hud?
@@ -195,11 +190,10 @@ poll_secs = 10
 
 ### Running It Only Shows `killed codex`
 
-macOS may directly kill a locally copied binary when its signature is invalid. First rerun the install script:
+macOS may directly kill a locally copied binary when its signature is invalid. First rerun the installer from the extracted release package:
 
 ```bash
-cargo build --release
-./install.sh
+./install.sh ./codex
 ```
 
 If it still fails, manually re-sign it:
