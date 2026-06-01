@@ -242,7 +242,7 @@ cargo test
 
 ## License
 
-TBD. 在没有明确许可证前，外部用户不能可靠复用、分发或修改这个项目。
+MIT License. See [LICENSE](LICENSE).
 
 ## 更新日志
 
