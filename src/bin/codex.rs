@@ -2,23 +2,33 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    Arc, Mutex,
+};
+use std::thread;
 use std::time::{Duration, Instant};
 
-use codex_hud::bridge::{spawn_local_ws_bridge, LocalWsBridgeHandle};
+use codex_hud::bridge::LocalWsBridgeHandle;
 use codex_hud::config::Config;
-use codex_hud::hud::{HudSnapshot, LocalContext};
+use codex_hud::hud::{apply_app_server_message, HudSnapshot, LocalContext};
+use codex_hud::protocol::{AppServerClient, ClientInfo};
 use codex_hud::pty::{
     launcher_env_entries, launcher_environment, terminal_size_from_runtime_or_env,
     LauncherEnvironment,
 };
-use codex_hud::surface::render_compact;
+use codex_hud::surface::render_compact_ansi;
 use codex_hud::wrapper::{
     build_remote_launch_args, cached_unix_remote_support, classify_launch, find_real_codex_in_path,
     LaunchDisposition,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::style::{Color, ResetColor, SetBackgroundColor};
 use crossterm::terminal;
 use crossterm::{cursor, queue};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -42,8 +52,12 @@ fn run() -> io::Result<()> {
             )
         })?;
 
-    let disposition = classify_launch(&args);
     let config = Config::load_from_env().unwrap_or_else(|_| Config::default());
+    if !config.launcher.enabled {
+        return exec_real_codex(real_codex, args, None);
+    }
+
+    let disposition = classify_launch(&args);
     let launcher_env = if matches!(disposition, LaunchDisposition::Intercept) {
         let terminal_kind = env::var("TERM").ok();
         let (_, terminal_rows) = terminal_size_from_runtime_or_env();
@@ -79,8 +93,16 @@ fn run() -> io::Result<()> {
 
     if use_pty_host {
         if let Some(environment) = launcher_env.clone() {
-            match run_interactive_pty_host(real_codex.clone(), forwarded_args.clone(), environment)
-            {
+            let hud_events = prepared_launch
+                .as_mut()
+                .and_then(|prepared| prepared.hud_events.take());
+            match run_interactive_pty_host(
+                real_codex.clone(),
+                forwarded_args.clone(),
+                environment,
+                daemon_socket_path(&config.daemon.socket),
+                hud_events,
+            ) {
                 Ok(exit_code) => std::process::exit(exit_code),
                 Err(err) => {
                     eprintln!("codex HUD PTY host failed, falling back to plain Codex: {err}");
@@ -97,6 +119,7 @@ struct PreparedLaunch {
     forwarded_args: Vec<OsString>,
     _bridge: Option<LocalWsBridgeHandle>,
     _runtime: Option<tokio::runtime::Runtime>,
+    hud_events: Option<Receiver<serde_json::Value>>,
 }
 
 fn prepare_remote_launch(
@@ -110,32 +133,50 @@ fn prepare_remote_launch(
 
     ensure_app_server(real_codex, &socket_path, config)?;
 
+    if allow_ws_bridge && socket_path_is_socket(&socket_path) {
+        let runtime = tokio::runtime::Runtime::new().map_err(io_error)?;
+        let (hud_events_tx, hud_events_rx) = mpsc::channel();
+        let bridge = runtime
+            .block_on(codex_hud::bridge::spawn_local_ws_bridge_with_observer(
+                &socket_path,
+                Some(hud_events_tx),
+            ))
+            .map_err(io_error)?;
+        let remote_url = OsString::from(bridge.local_url());
+
+        return Ok(PreparedLaunch {
+            forwarded_args: build_remote_launch_args(original_args, remote_url),
+            _bridge: Some(bridge),
+            _runtime: Some(runtime),
+            hud_events: Some(hud_events_rx),
+        });
+    }
+
     if unix_remote_supported {
         let remote_url = OsString::from(format!("unix://{}", socket_path.display()));
         return Ok(PreparedLaunch {
             forwarded_args: build_remote_launch_args(original_args, remote_url),
             _bridge: None,
             _runtime: None,
+            hud_events: None,
         });
     }
 
-    if !allow_ws_bridge {
-        return Err(io::Error::other(
-            "loopback ws bridge requires the wrapper process to remain active",
-        ));
-    }
+    Err(io::Error::other(
+        "loopback ws bridge requires the wrapper process to remain active",
+    ))
+}
 
-    let runtime = tokio::runtime::Runtime::new().map_err(io_error)?;
-    let bridge = runtime
-        .block_on(spawn_local_ws_bridge(&socket_path))
-        .map_err(io_error)?;
-    let remote_url = OsString::from(bridge.local_url());
+#[cfg(unix)]
+fn socket_path_is_socket(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.file_type().is_socket())
+        .unwrap_or(false)
+}
 
-    Ok(PreparedLaunch {
-        forwarded_args: build_remote_launch_args(original_args, remote_url),
-        _bridge: Some(bridge),
-        _runtime: Some(runtime),
-    })
+#[cfg(not(unix))]
+fn socket_path_is_socket(_path: &Path) -> bool {
+    false
 }
 
 fn daemon_socket_path(configured_socket: &str) -> PathBuf {
@@ -146,7 +187,28 @@ fn daemon_socket_path(configured_socket: &str) -> PathBuf {
 }
 
 fn ensure_app_server(real_codex: &Path, socket_path: &Path, config: &Config) -> io::Result<()> {
-    if socket_path.exists() && config.daemon.reuse_shared_daemon {
+    if socket_path.exists() && !socket_path_is_socket(socket_path) {
+        if config.daemon.auto_start {
+            match fs::remove_file(socket_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "app-server socket path exists but is not a socket: {}",
+                    socket_path.display()
+                ),
+            ));
+        }
+    }
+
+    if socket_path.exists()
+        && socket_path_is_socket(socket_path)
+        && config.daemon.reuse_shared_daemon
+    {
         return Ok(());
     }
 
@@ -207,6 +269,8 @@ fn run_interactive_pty_host(
     real_codex: PathBuf,
     forwarded_args: Vec<OsString>,
     launcher_env: LauncherEnvironment,
+    app_server_socket: PathBuf,
+    hud_events: Option<Receiver<serde_json::Value>>,
 ) -> io::Result<i32> {
     let (cols, rows) = terminal_size_from_runtime_or_env();
     let pty_rows = pty_rows_for_terminal(rows, launcher_env.layout.bottom_rows);
@@ -230,65 +294,130 @@ fn run_interactive_pty_host(
 
     let mut reader = pair.master.try_clone_reader().map_err(io_error)?;
     let mut writer = pair.master.take_writer().map_err(io_error)?;
-    let output_thread = std::thread::spawn(move || copy_pty_output(&mut reader));
     let _raw_mode = RawModeGuard::enable()?;
-    let mut stdout = std::io::stdout();
-    let hud_snapshot = launcher_hud_snapshot();
-    let mut last_hud_draw = Instant::now();
-    draw_inline_hud(&mut stdout, &launcher_env, cols, rows, &hud_snapshot)?;
-
-    let exit_code = loop {
-        if let Some(status) = child.try_wait()? {
-            break status.exit_code() as i32;
+    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+    let hud_snapshot = Arc::new(Mutex::new(launcher_hud_snapshot()));
+    let output_stdout = Arc::clone(&stdout);
+    let output_hud_snapshot = Arc::clone(&hud_snapshot);
+    let output_launcher_env = launcher_env.clone();
+    let output_thread = std::thread::spawn(move || {
+        copy_pty_output(
+            &mut reader,
+            output_stdout,
+            output_hud_snapshot,
+            output_launcher_env,
+        )
+    });
+    let hud_stop = Arc::new(AtomicBool::new(false));
+    let (hud_dirty_tx, hud_dirty_rx) = mpsc::channel();
+    let mut hud_collectors = spawn_hud_state_collectors(
+        app_server_socket,
+        hud_events,
+        Arc::clone(&hud_snapshot),
+        Arc::clone(&hud_stop),
+        hud_dirty_tx,
+    );
+    let result = (|| -> io::Result<i32> {
+        let mut last_hud_draw = Instant::now();
+        let snapshot = hud_snapshot
+            .lock()
+            .map_err(|_| io::Error::other("HUD snapshot lock poisoned"))?
+            .clone();
+        {
+            let mut stdout = stdout
+                .lock()
+                .map_err(|_| io::Error::other("stdout lock poisoned"))?;
+            draw_inline_hud(&mut *stdout, &launcher_env, cols, rows, &snapshot)?;
         }
+        let mut last_hud_snapshot = Some(snapshot);
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Resize(cols, rows) => {
-                    let size = PtySize {
-                        rows: pty_rows_for_terminal(rows, launcher_env.layout.bottom_rows),
-                        cols: cols.max(1),
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    };
-                    let _ = pair.master.resize(size);
-                    draw_inline_hud(&mut stdout, &launcher_env, cols, rows, &hud_snapshot)?;
-                    last_hud_draw = Instant::now();
-                }
-                Event::Key(key) => {
-                    if let Some(bytes) = encode_key_event(key) {
-                        writer.write_all(&bytes)?;
+        let exit_code = loop {
+            if let Some(status) = child.try_wait()? {
+                break status.exit_code() as i32;
+            }
+
+            if event::poll(Duration::from_millis(50))? {
+                match event::read()? {
+                    Event::Resize(cols, rows) => {
+                        let size = PtySize {
+                            rows: pty_rows_for_terminal(rows, launcher_env.layout.bottom_rows),
+                            cols: cols.max(1),
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        };
+                        let _ = pair.master.resize(size);
+                        {
+                            let snapshot = hud_snapshot
+                                .lock()
+                                .map_err(|_| io::Error::other("HUD snapshot lock poisoned"))?;
+                            let snapshot = snapshot.clone();
+                            let mut stdout = stdout
+                                .lock()
+                                .map_err(|_| io::Error::other("stdout lock poisoned"))?;
+                            draw_inline_hud(&mut *stdout, &launcher_env, cols, rows, &snapshot)?;
+                            last_hud_snapshot = Some(snapshot);
+                        }
+                        last_hud_draw = Instant::now();
+                    }
+                    Event::Key(key) => {
+                        if let Some(bytes) = encode_key_event(key) {
+                            writer.write_all(&bytes)?;
+                            writer.flush()?;
+                        }
+                    }
+                    Event::Paste(text) => {
+                        writer.write_all(text.as_bytes())?;
                         writer.flush()?;
                     }
+                    Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
                 }
-                Event::Paste(text) => {
-                    writer.write_all(text.as_bytes())?;
-                    writer.flush()?;
-                }
-                Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
             }
-        }
 
-        if last_hud_draw.elapsed() >= Duration::from_millis(500) {
-            let (cols, rows) = terminal_size_from_runtime_or_env();
-            draw_inline_hud(&mut stdout, &launcher_env, cols, rows, &hud_snapshot)?;
-            last_hud_draw = Instant::now();
-        }
-    };
+            let hud_dirty = drain_hud_dirty(&hud_dirty_rx);
+            if hud_dirty || last_hud_draw.elapsed() >= Duration::from_secs(2) {
+                let (cols, rows) = terminal_size_from_runtime_or_env();
+                {
+                    let snapshot = hud_snapshot
+                        .lock()
+                        .map_err(|_| io::Error::other("HUD snapshot lock poisoned"))?;
+                    let snapshot = snapshot.clone();
+                    if last_hud_snapshot.as_ref() != Some(&snapshot) {
+                        let mut stdout = stdout
+                            .lock()
+                            .map_err(|_| io::Error::other("stdout lock poisoned"))?;
+                        draw_inline_hud(&mut *stdout, &launcher_env, cols, rows, &snapshot)?;
+                        last_hud_snapshot = Some(snapshot);
+                    }
+                }
+                last_hud_draw = Instant::now();
+            }
+        };
 
+        Ok(exit_code)
+    })();
+
+    if result.is_err() {
+        let _ = child.kill();
+    }
     drop(writer);
-    let _ = output_thread
+    hud_stop.store(true, Ordering::Relaxed);
+    let collector_result = join_all_handles(&mut hud_collectors);
+    let output_result = output_thread
         .join()
         .map_err(|_| io::Error::other("PTY output forwarding thread panicked"))?;
 
+    let exit_code = result?;
+    collector_result?;
+    output_result?;
     Ok(exit_code)
 }
 
 fn launcher_hud_snapshot() -> HudSnapshot {
     HudSnapshot {
         thread_id: None,
-        thread_name: Some("Codex HUD".to_string()),
+        thread_name: Some("codex-hud".to_string()),
         model: None,
+        model_provider: None,
         turn_status: Some("launcher active".to_string()),
         token_usage: None,
         rate_limit: None,
@@ -303,7 +432,203 @@ fn launcher_hud_snapshot() -> HudSnapshot {
         plan: None,
         mcp_summary: None,
         tool_summary: None,
+        skill_count: 0,
     }
+}
+
+fn spawn_hud_state_collectors(
+    socket_path: PathBuf,
+    hud_events: Option<Receiver<serde_json::Value>>,
+    snapshot: Arc<Mutex<HudSnapshot>>,
+    stop: Arc<AtomicBool>,
+    hud_dirty: Sender<()>,
+) -> Vec<thread::JoinHandle<()>> {
+    let mut handles = Vec::new();
+    let consume_events = hud_events.is_none();
+
+    if let Some(hud_events) = hud_events {
+        let snapshot = Arc::clone(&snapshot);
+        let stop = Arc::clone(&stop);
+        let hud_dirty = hud_dirty.clone();
+        handles.push(thread::spawn(move || {
+            collect_bridge_events(hud_events, snapshot, stop, hud_dirty);
+        }));
+    }
+
+    if socket_path.exists() {
+        handles.push(thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Runtime::new() else {
+                return;
+            };
+
+            runtime.block_on(async move {
+                collect_hud_state(socket_path, snapshot, stop, consume_events, hud_dirty).await;
+            });
+        }));
+    }
+
+    handles
+}
+
+fn collect_bridge_events(
+    hud_events: Receiver<serde_json::Value>,
+    snapshot: Arc<Mutex<HudSnapshot>>,
+    stop: Arc<AtomicBool>,
+    hud_dirty: Sender<()>,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        match hud_events.recv_timeout(Duration::from_millis(250)) {
+            Ok(message) => {
+                if let Ok(mut guard) = snapshot.lock() {
+                    if apply_app_server_message(&mut guard, &message) {
+                        notify_hud_dirty(&hud_dirty);
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+async fn collect_hud_state(
+    socket_path: PathBuf,
+    snapshot: Arc<Mutex<HudSnapshot>>,
+    stop: Arc<AtomicBool>,
+    consume_events: bool,
+    hud_dirty: Sender<()>,
+) {
+    let client_info = ClientInfo {
+        name: "codex-hud".to_string(),
+        title: Some("Codex HUD".to_string()),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+
+    while !stop.load(Ordering::Relaxed) {
+        let mut client = match AppServerClient::connect_unix(&socket_path).await {
+            Ok(client) => client,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+        };
+
+        let initialized = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.initialize(client_info.clone()),
+        )
+        .await;
+        if !matches!(initialized, Ok(Ok(_))) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        let initialized =
+            tokio::time::timeout(Duration::from_millis(500), client.initialized()).await;
+        if !matches!(initialized, Ok(Ok(()))) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+
+        let rate_limits = tokio::time::timeout(
+            Duration::from_millis(500),
+            client.account_rate_limits_read(),
+        )
+        .await;
+        if let Ok(Ok(rate_limits)) = rate_limits {
+            let mut guard = match snapshot.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            if apply_app_server_message(&mut guard, &serde_json::json!({"result": rate_limits})) {
+                notify_hud_dirty(&hud_dirty);
+            }
+        }
+
+        if consume_events {
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let message =
+                    match tokio::time::timeout(Duration::from_millis(250), client.next_message())
+                        .await
+                    {
+                        Ok(Ok(message)) => message,
+                        Ok(Err(_)) => break,
+                        Err(_) => continue,
+                    };
+
+                if let Ok(mut guard) = snapshot.lock() {
+                    if apply_app_server_message(&mut guard, &message) {
+                        notify_hud_dirty(&hud_dirty);
+                    }
+                }
+            }
+        } else {
+            let mut known_thread_id = snapshot
+                .lock()
+                .ok()
+                .and_then(|guard| guard.thread_id.clone());
+
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let current_thread_id = snapshot
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.thread_id.clone());
+
+                if current_thread_id.is_some() && current_thread_id != known_thread_id {
+                    if let Some(thread_id) = current_thread_id.clone() {
+                        let thread = tokio::time::timeout(
+                            Duration::from_millis(500),
+                            client.thread_read(&thread_id, false),
+                        )
+                        .await;
+                        if let Ok(Ok(thread)) = thread {
+                            if let Ok(mut guard) = snapshot.lock() {
+                                if apply_app_server_message(
+                                    &mut guard,
+                                    &serde_json::json!({"result": thread}),
+                                ) {
+                                    notify_hud_dirty(&hud_dirty);
+                                }
+                            }
+                        }
+                        known_thread_id = current_thread_id;
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn join_all_handles(handles: &mut Vec<thread::JoinHandle<()>>) -> io::Result<()> {
+    for handle in handles.drain(..) {
+        handle
+            .join()
+            .map_err(|_| io::Error::other("HUD collector thread panicked"))?;
+    }
+    Ok(())
+}
+
+fn drain_hud_dirty(hud_dirty: &Receiver<()>) -> bool {
+    let mut dirty = false;
+    while hud_dirty.try_recv().is_ok() {
+        dirty = true;
+    }
+    dirty
+}
+
+fn notify_hud_dirty(hud_dirty: &Sender<()>) {
+    let _ = hud_dirty.send(());
 }
 
 fn draw_inline_hud(
@@ -324,21 +649,29 @@ fn draw_inline_hud(
 
     let bottom_rows = launcher_env.layout.bottom_rows.min(rows);
     let start_row = rows.saturating_sub(bottom_rows);
-    let mut lines = render_compact(snapshot, cols as usize);
+    let mut lines = render_compact_ansi(snapshot, cols as usize);
     lines.truncate(bottom_rows as usize);
+    let hud_background = Color::Rgb {
+        r: 11,
+        g: 16,
+        b: 32,
+    };
 
     queue!(stdout, cursor::SavePosition)?;
     for row_offset in 0..bottom_rows {
+        let row = start_row + row_offset;
         queue!(
             stdout,
-            cursor::MoveTo(0, start_row + row_offset),
+            cursor::MoveTo(0, row),
+            SetBackgroundColor(hud_background),
             terminal::Clear(terminal::ClearType::CurrentLine)
         )?;
+        queue!(stdout, cursor::MoveTo(0, row), ResetColor)?;
         if let Some(line) = lines.get(row_offset as usize) {
             write!(stdout, "{line}")?;
         }
     }
-    queue!(stdout, cursor::RestorePosition)?;
+    queue!(stdout, ResetColor, cursor::RestorePosition)?;
     stdout.flush()
 }
 
@@ -367,8 +700,12 @@ fn git_worktree_is_dirty() -> bool {
     output.status.success() && !output.stdout.is_empty()
 }
 
-fn copy_pty_output(reader: &mut dyn Read) -> io::Result<()> {
-    let mut stdout = std::io::stdout();
+fn copy_pty_output(
+    reader: &mut dyn Read,
+    stdout: Arc<Mutex<impl Write + Send + 'static>>,
+    hud_snapshot: Arc<Mutex<HudSnapshot>>,
+    launcher_env: LauncherEnvironment,
+) -> io::Result<()> {
     let mut buffer = [0_u8; 8192];
 
     loop {
@@ -377,7 +714,16 @@ fn copy_pty_output(reader: &mut dyn Read) -> io::Result<()> {
             return Ok(());
         }
 
+        let snapshot = hud_snapshot
+            .lock()
+            .map_err(|_| io::Error::other("HUD snapshot lock poisoned"))?
+            .clone();
+        let (cols, rows) = terminal_size_from_runtime_or_env();
+        let mut stdout = stdout
+            .lock()
+            .map_err(|_| io::Error::other("stdout lock poisoned"))?;
         stdout.write_all(&buffer[..bytes_read])?;
+        draw_inline_hud(&mut *stdout, &launcher_env, cols, rows, &snapshot)?;
         stdout.flush()?;
     }
 }
@@ -539,5 +885,81 @@ fn exec_real_codex(
             io::ErrorKind::Other,
             format!("codex exited with status {status}"),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_hud::pty::{LauncherSurface, PtyLayout};
+    use std::io::Cursor;
+
+    fn test_launcher_environment() -> LauncherEnvironment {
+        LauncherEnvironment::new(
+            LauncherSurface::Inline,
+            "split",
+            PtyLayout {
+                total_rows: 8,
+                main_rows: 6,
+                bottom_rows: 2,
+            },
+        )
+    }
+
+    fn test_snapshot() -> HudSnapshot {
+        HudSnapshot {
+            thread_id: Some("thr_123".to_string()),
+            thread_name: Some("build-agent".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            model_provider: Some("openai".to_string()),
+            turn_status: Some("running".to_string()),
+            token_usage: Some(codex_hud::hud::TokenUsage {
+                used: 9_216,
+                limit: 12_800,
+            }),
+            rate_limit: None,
+            local: LocalContext {
+                cwd: Some("/Users/me/codex-hud".to_string()),
+                git_branch: Some("main".to_string()),
+                git_dirty: true,
+            },
+            goal: None,
+            plan: None,
+            mcp_summary: None,
+            tool_summary: None,
+            skill_count: 3,
+        }
+    }
+
+    #[test]
+    fn draw_inline_hud_does_not_emit_full_width_blank_fill() {
+        let mut output = Vec::new();
+        let env = test_launcher_environment();
+
+        draw_inline_hud(&mut output, &env, 12, 4, &test_snapshot()).unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(!rendered.contains(&" ".repeat(12)), "{rendered:?}");
+    }
+
+    #[test]
+    fn copy_pty_output_redraws_hud_after_forwarding_output() {
+        let mut reader = Cursor::new(b"hello from codex\n".to_vec());
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        let hud_snapshot = Arc::new(Mutex::new(test_snapshot()));
+
+        copy_pty_output(
+            &mut reader,
+            Arc::clone(&stdout),
+            hud_snapshot,
+            test_launcher_environment(),
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(stdout.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("hello from codex"), "{rendered:?}");
+        assert!(rendered.contains("codex-hud"), "{rendered:?}");
+        assert!(rendered.contains("来源"), "{rendered:?}");
+        assert!(rendered.contains("openai"), "{rendered:?}");
     }
 }

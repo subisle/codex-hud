@@ -83,6 +83,41 @@ status_rows = 3
 }
 
 #[test]
+fn interactive_launch_recovers_from_stale_non_socket_daemon_paths() {
+    let temp = tempdir().unwrap();
+    let fake_codex = temp.path().join("codex");
+    write_unix_remote_fake_codex(&fake_codex);
+    let socket_path = temp.path().join("app-server.sock");
+    let marker_path = temp.path().join("app-server.started");
+    fs::write(&socket_path, b"stale").unwrap();
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+[daemon]
+socket = "{}"
+
+[launcher]
+surface = "fallback"
+fallback_surface = "split"
+status_rows = 3
+"#,
+            socket_path.display()
+        ),
+    );
+
+    let output = run_codex(&temp, &["resume"], Some(("TERM", "xterm-256color")), None);
+
+    assert!(output.status.success());
+    assert!(marker_path.exists(), "app-server was not restarted");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(&format!("ARGS:--remote unix://{}", socket_path.display())),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn interactive_launch_falls_back_to_plain_codex_when_remote_setup_fails() {
     let temp = tempdir().unwrap();
     let fake_codex = temp.path().join("codex");
@@ -106,6 +141,28 @@ status_rows = 3
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("ARGS:resume"));
     assert!(!stdout.contains("--remote"));
+}
+
+#[test]
+fn launcher_disabled_in_config_bypasses_wrapper_behaviour() {
+    let temp = tempdir().unwrap();
+    let fake_codex = temp.path().join("codex");
+    write_unix_remote_fake_codex(&fake_codex);
+    write_config(
+        temp.path(),
+        r#"
+[launcher]
+enabled = false
+"#,
+    );
+
+    let output = run_codex(&temp, &["resume"], Some(("TERM", "xterm-256color")), None);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("ARGS:resume"));
+    assert!(!stdout.contains("--remote"));
+    assert!(stdout.contains("SURFACE:<unset>"));
 }
 
 #[test]
@@ -208,6 +265,8 @@ fi
 if [ "${1:-}" = "app-server" ]; then
   listen="${3:-}"
   socket="${listen#unix://}"
+  marker="${socket%.sock}.started"
+  printf 'started\n' > "$marker"
   : > "$socket"
   exit 0
 fi
